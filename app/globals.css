@@ -536,6 +536,75 @@ button:focus-visible, input:focus-visible {
 .ghost-button { background: transparent; color: var(--cyan); border: 1px solid var(--cyan); box-shadow: none; }
 .note { margin: 0; padding: 18px 28px; color: var(--muted); font-size: .78rem; line-height: 1.6; }
 
+/* Járatközpontú vizuális hierarchia és légitársasági arculat */
+.turbulence-area.route-impact { stroke-width: 5; filter: drop-shadow(0 0 7px currentColor); }
+.route-weather-brief {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: 66px;
+  width: min(590px, calc(100% - 40px));
+  display: grid;
+  gap: 4px;
+  transform: translateX(-50%);
+  padding: 13px 16px;
+  border: 1px solid rgba(53, 214, 233, .32);
+  border-radius: 11px;
+  background: rgba(4, 13, 23, .93);
+  box-shadow: 0 12px 38px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(12px);
+}
+.route-weather-brief.warning { border-color: rgba(255, 184, 77, .7); background: rgba(31, 20, 11, .94); }
+.route-weather-brief > span { color: var(--cyan); font-size: .62rem; font-weight: 900; letter-spacing: .15em; }
+.route-weather-brief.warning > span { color: var(--warning); }
+.route-weather-brief strong { color: white; font-size: .88rem; }
+.route-weather-brief small { color: #9db0be; font-size: .72rem; line-height: 1.35; }
+.flight-panel {
+  --airline-color: var(--cyan);
+  --airline-secondary: white;
+  --airline-rgb: 53, 214, 233;
+  background: radial-gradient(circle at 100% 0, rgba(var(--airline-rgb), .13), transparent 25rem), linear-gradient(180deg, #07111e, #091523);
+}
+.flight-summary {
+  position: relative;
+  padding-top: 21px;
+  border-top: 3px solid var(--airline-color);
+  background: linear-gradient(135deg, rgba(var(--airline-rgb), .11), transparent 58%);
+}
+.summary-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
+.airline-brand { min-width: 0; display: flex; align-items: center; gap: 9px; color: #dceaf3; font-size: .75rem; font-weight: 800; }
+.airline-brand b { width: 31px; height: 31px; flex: 0 0 31px; display: grid; place-items: center; border: 1px solid rgba(var(--airline-rgb), .75); border-radius: 9px; background: rgba(var(--airline-rgb), .2); color: var(--airline-secondary); font-size: .7rem; box-shadow: 0 0 18px rgba(var(--airline-rgb), .18); }
+.airline-brand span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-button { flex: 0 0 auto; padding: 7px 10px; border: 1px solid rgba(var(--airline-rgb), .55); border-radius: 8px; background: rgba(var(--airline-rgb), .09); color: #dceaf3; font-size: .68rem; font-weight: 800; cursor: pointer; }
+.share-button:hover { background: rgba(var(--airline-rgb), .2); }
+.flight-panel .route-heading span { color: var(--airline-color); }
+.route-progress { padding: 16px 18px 22px; }
+.progress-route-head { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 12px; }
+.progress-route-head > div:last-child { text-align: right; }
+.progress-route-head b { display: block; color: white; font: 900 1rem ui-monospace, monospace; }
+.progress-route-head span { display: block; margin-top: 3px; color: var(--muted); font-size: .62rem; }
+.progress-route-head > strong { color: var(--lime); font: 900 1.35rem ui-monospace, monospace; }
+.progress-track { height: 10px; margin-top: 18px; border: 1px solid #24445d; background: #10263a; box-shadow: inset 0 2px 7px rgba(0, 0, 0, .4); }
+.progress-track i { inset: -1px auto -1px -1px; background: linear-gradient(90deg, rgba(var(--airline-rgb), .72), var(--airline-color)); box-shadow: 0 0 14px rgba(var(--airline-rgb), .65); }
+.progress-track b { filter: drop-shadow(0 0 7px var(--airline-color)); }
+.progress-origin, .progress-destination { position: absolute; top: 50%; width: 16px; height: 16px; border: 3px solid #dceaf3; border-radius: 50%; background: #0a1725; transform: translate(-50%, -50%); }
+.progress-origin { left: 0; border-color: var(--airline-color); }
+.progress-destination { left: 100%; }
+.section-kicker { color: var(--cyan); font-size: .62rem; font-weight: 900; letter-spacing: .15em; }
+.metric-kicker { padding: 14px 20px 9px; border-top: 1px solid var(--border); background: rgba(4, 12, 21, .42); }
+.flight-timeline { padding: 15px 18px 18px; border-bottom: 1px solid var(--border); background: rgba(4, 12, 21, .42); }
+.timeline-track { position: relative; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 17px; }
+.timeline-track::before { content: ""; position: absolute; left: 8%; right: 8%; top: 6px; height: 2px; background: #223d53; }
+.timeline-event { position: relative; z-index: 1; min-width: 0; display: grid; justify-items: center; gap: 5px; text-align: center; }
+.timeline-event i { width: 14px; height: 14px; border: 3px solid #29465c; border-radius: 50%; background: #091523; }
+.timeline-event strong { color: #8fa4b3; font-size: .57rem; line-height: 1.1; }
+.timeline-event span { color: #617b8d; font-size: .52rem; line-height: 1.15; }
+.timeline-event.done i { border-color: var(--airline-color); background: var(--airline-color); box-shadow: 0 0 10px rgba(var(--airline-rgb), .45); }
+.timeline-event.done strong { color: #dceaf3; }
+.timeline-event.current i { border-color: var(--lime); background: var(--lime); box-shadow: 0 0 14px rgba(184, 243, 74, .6); }
+.timeline-event.current strong { color: var(--lime); }
+.timeline-event.current span { color: #cce7a0; }
+
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .45; transform: scale(.72); }
@@ -561,7 +630,7 @@ button:focus-visible, input:focus-visible {
   .search { grid-template-columns: 1fr; }
   .search button { width: 100%; }
   .map-panel { min-height: 470px; }
-  .data-source { top: 14px; right: 14px; bottom: auto; max-width: 70%; }
+  .data-source { display: none; }
   .primary-grid { grid-template-columns: 1fr 1fr; }
   .journey-times { grid-template-columns: 1fr 1fr; }
   .journey-times > div { padding: 10px 12px; }

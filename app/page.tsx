@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { geoGraticule10, geoMercator, geoPath } from "d3-geo";
+import { type CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { geoGraticule10, geoInterpolate, geoMercator, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import world from "world-atlas/countries-110m.json";
 
@@ -102,6 +102,22 @@ type TurbulenceFeature = {
   geometry: { type: string; coordinates: unknown };
 };
 
+type AirlineBrand = {
+  name: string;
+  primary: string;
+  secondary: string;
+  rgb: string;
+  monogram: string;
+};
+
+type RouteWeatherImpact = {
+  index: number;
+  feature: TurbulenceFeature;
+  routePercent: number;
+  etaMinutes: number | null;
+  altitudeRelevant: boolean;
+};
+
 function weatherFeatureForD3(feature: TurbulenceFeature): TurbulenceFeature {
   // A NOAA szabványos GeoJSON gyűrűirányt használ, a d3-geo gömbi
   // poligonértelmezése viszont ennek ellenkezőjét várja. Megfordítás nélkül a
@@ -187,6 +203,137 @@ function statusLabel(status: string) {
   return labels[status.toLowerCase()] || status.toUpperCase();
 }
 
+function airlineBrand(name: string | null | undefined, callsign: string | null | undefined): AirlineBrand {
+  const source = `${name || ""} ${callsign || ""}`.toLowerCase();
+  const brands: Array<[RegExp, Omit<AirlineBrand, "name" | "monogram">]> = [
+    [/wizz|wzz/, { primary: "#c6007e", secondary: "#f2b7db", rgb: "198, 0, 126" }],
+    [/turkish|thy/, { primary: "#e31b23", secondary: "#ffffff", rgb: "227, 27, 35" }],
+    [/ryanair|ryr/, { primary: "#2b63b7", secondary: "#f1c40f", rgb: "43, 99, 183" }],
+    [/lufthansa|dlh/, { primary: "#f9ba00", secondary: "#ffffff", rgb: "249, 186, 0" }],
+    [/emirates|uae/, { primary: "#d71920", secondary: "#ffffff", rgb: "215, 25, 32" }],
+    [/klm/, { primary: "#00a1de", secondary: "#ffffff", rgb: "0, 161, 222" }],
+    [/easyjet|ezy/, { primary: "#ff6600", secondary: "#ffffff", rgb: "255, 102, 0" }],
+    [/british airways|baw/, { primary: "#4d7fb8", secondary: "#ffffff", rgb: "77, 127, 184" }],
+    [/air france|afr/, { primary: "#3f70bb", secondary: "#ffffff", rgb: "63, 112, 187" }],
+  ];
+  const matched = brands.find(([pattern]) => pattern.test(source))?.[1] || {
+    primary: "#35d6e9", secondary: "#ffffff", rgb: "53, 214, 233",
+  };
+  const displayName = name || "Légitársaság nem ismert";
+  const monogram = displayName === "Légitársaság nem ismert"
+    ? "✈"
+    : displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  return { name: displayName, monogram, ...matched };
+}
+
+function flightLevelNumber(value: string) {
+  if (value === "SFC") return 0;
+  const parsed = Number(value.replace(/[^0-9]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function pointInRing(point: [number, number], rawRing: unknown) {
+  if (!Array.isArray(rawRing) || rawRing.length < 3) return false;
+  const ring = rawRing as number[][];
+  const [pointLon, pointLat] = point;
+  const normalizedLon = (value: number) => {
+    let lon = value;
+    while (lon - pointLon > 180) lon -= 360;
+    while (lon - pointLon < -180) lon += 360;
+    return lon;
+  };
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const currentPoint = ring[index];
+    const previousPoint = ring[previous];
+    if (!currentPoint || !previousPoint) continue;
+    const currentLon = normalizedLon(currentPoint[0] ?? 0);
+    const currentLat = currentPoint[1] ?? 0;
+    const previousLon = normalizedLon(previousPoint[0] ?? 0);
+    const previousLat = previousPoint[1] ?? 0;
+    const intersects = ((currentLat > pointLat) !== (previousLat > pointLat))
+      && pointLon < ((previousLon - currentLon) * (pointLat - currentLat)) / (previousLat - currentLat) + currentLon;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function weatherContainsPoint(feature: TurbulenceFeature, point: [number, number]) {
+  const containsPolygon = (rawPolygon: unknown) => {
+    if (!Array.isArray(rawPolygon) || !rawPolygon[0] || !pointInRing(point, rawPolygon[0])) return false;
+    return !rawPolygon.slice(1).some((hole) => pointInRing(point, hole));
+  };
+  const coordinates = feature.geometry.coordinates;
+  if (feature.geometry.type === "Polygon") return containsPolygon(coordinates);
+  if (feature.geometry.type === "MultiPolygon" && Array.isArray(coordinates)) {
+    return coordinates.some((polygon) => containsPolygon(polygon));
+  }
+  return false;
+}
+
+function routeWeatherImpacts(
+  features: TurbulenceFeature[],
+  journey: NonNullable<Telemetry["journey"]>,
+  altitudeM: number | null,
+) {
+  const interpolate = geoInterpolate(
+    [journey.origin.lon, journey.origin.lat],
+    [journey.destination.lon, journey.destination.lat],
+  );
+  const samples = Array.from({ length: 101 }, (_, index) => ({ index, point: interpolate(index / 100) }));
+  const currentProgress = journey.progressPercent ?? 0;
+  const currentFlightLevel = altitudeM == null ? null : altitudeM / 30.48;
+  return features.flatMap((weather, index): RouteWeatherImpact[] => {
+    const hit = samples.find((sample) => sample.index >= currentProgress && weatherContainsPoint(weather, sample.point));
+    if (!hit) return [];
+    const base = flightLevelNumber(weather.properties.base);
+    const top = flightLevelNumber(weather.properties.top);
+    const altitudeRelevant = currentFlightLevel == null || (
+      (base == null || currentFlightLevel >= base) && (top == null || currentFlightLevel <= top)
+    );
+    const remainingFraction = Math.max(0, (hit.index - currentProgress) / Math.max(1, 100 - currentProgress));
+    return [{
+      index,
+      feature: weather,
+      routePercent: hit.index,
+      etaMinutes: journey.remainingMinutes == null ? null : Math.round(journey.remainingMinutes * remainingFraction),
+      altitudeRelevant,
+    }];
+  }).sort((a, b) => Number(b.altitudeRelevant) - Number(a.altitudeRelevant) || a.routePercent - b.routePercent);
+}
+
+function FlightTimeline({ telemetry, scheduled }: { telemetry?: Telemetry | null; scheduled?: ScheduledFlight | null }) {
+  const phaseIndex = scheduled
+    ? 0
+    : telemetry?.onGround ? 0
+    : (telemetry?.verticalRateMs ?? 0) < -1 ? 3
+    : (telemetry?.altitudeM ?? 0) > 7000 ? 2
+    : 1;
+  const departure = scheduled?.estimatedDepartureAt || telemetry?.journey?.estimatedDepartureAt;
+  const arrival = scheduled?.estimatedArrivalAt || telemetry?.journey?.estimatedArrivalAt;
+  const events = [
+    ["Indulás", departure ? clockTime(departure, null, null, -1) : "—"],
+    ["Felszállás", phaseIndex > 0 ? "megtörtént" : "várható"],
+    ["Utazómagasság", phaseIndex > 2 ? "megtörtént" : phaseIndex === 2 ? "aktuális" : "várható"],
+    ["Süllyedés", phaseIndex > 3 ? "megtörtént" : phaseIndex === 3 ? "aktuális" : "várható"],
+    ["Érkezés", arrival ? clockTime(arrival, null, null, 1) : "—"],
+  ];
+  return (
+    <div className="flight-timeline" aria-label="Repülési eseményvonal">
+      <div className="section-kicker">REPÜLÉSI ESEMÉNYEK</div>
+      <div className="timeline-track">
+        {events.map(([label, detail], index) => (
+          <div className={`timeline-event ${index < phaseIndex ? "done" : index === phaseIndex ? "current" : "future"}`} key={label}>
+            <i />
+            <strong>{label}</strong>
+            <span>{detail}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function metric(label: string, value: string, unit = "", accent = false) {
   return (
     <div className="metric" key={label}>
@@ -261,7 +408,7 @@ function RadarMap({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
-  const [weatherEnabled, setWeatherEnabled] = useState(false);
+  const [weatherEnabled, setWeatherEnabled] = useState(true);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [turbulence, setTurbulence] = useState<TurbulenceFeature[]>([]);
@@ -270,6 +417,13 @@ function RadarMap({
     telemetry.trackDeg ?? telemetry.trueHeadingDeg ?? telemetry.magneticHeadingDeg ?? 0;
   const dimensions = { width: 1100, height: 740 };
   const journey = telemetry.journey;
+  const weatherImpacts = useMemo(
+    () => journey ? routeWeatherImpacts(turbulence, journey, telemetry.altitudeM) : [],
+    [journey, telemetry.altitudeM, turbulence],
+  );
+  const routeImpactIndexes = new Set(weatherImpacts.map((impact) => impact.index));
+  const relevantWeatherImpacts = weatherImpacts.filter((impact) => impact.altitudeRelevant);
+  const nextWeatherImpact = relevantWeatherImpacts[0] || weatherImpacts[0];
   const routeCoordinates = journey
     ? [
         [journey.origin.lon, journey.origin.lat],
@@ -392,7 +546,7 @@ function RadarMap({
         <path className="countries" d={path(countries) ?? ""} />
         {weatherEnabled && turbulence.map((area, index) => (
           <path
-            className={`turbulence-area ${weatherClass(area)}`}
+            className={`turbulence-area ${weatherClass(area)} ${routeImpactIndexes.has(index) ? "route-impact" : ""}`}
             d={path(weatherFeatureForD3(area) as never) ?? ""}
             key={`${area.properties.source}-${area.properties.area}-${index}`}
           >
@@ -453,6 +607,31 @@ function RadarMap({
       <div className="coordinate-band">
         {fmt(telemetry.lat, 4)}° {telemetry.lat >= 0 ? "N" : "S"} · {fmt(telemetry.lon, 4)}° {telemetry.lon >= 0 ? "E" : "W"}
       </div>
+      {journey && (
+        <div className={`route-weather-brief ${nextWeatherImpact?.altitudeRelevant ? "warning" : "clear"}`}>
+          <span>ÚTVONAL-IDŐJÁRÁS</span>
+          {weatherLoading ? (
+            <strong>Aktuális veszélyjelzések elemzése…</strong>
+          ) : weatherError ? (
+            <strong>{weatherError}</strong>
+          ) : nextWeatherImpact?.altitudeRelevant ? (
+            <>
+              <strong>{relevantWeatherImpacts.length} releváns veszélyzóna az útvonal előtt</strong>
+              <small>{nextWeatherImpact.feature.properties.hazard} · {nextWeatherImpact.feature.properties.severity} · {nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}{nextWeatherImpact.etaMinutes != null ? ` · kb. ${nextWeatherImpact.etaMinutes} perc múlva` : ""}</small>
+            </>
+          ) : nextWeatherImpact ? (
+            <>
+              <strong>Az útvonal érint veszélyzónát, de nem a jelenlegi repülési szinten</strong>
+              <small>{nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}</small>
+            </>
+          ) : (
+            <>
+              <strong>Nincs az útvonalat érintő aktív turbulenciajelzés</strong>
+              <small>NOAA/NWS SIGMET és G-AIRMET alapján</small>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -526,6 +705,7 @@ export default function Home() {
   const [message, setMessage] = useState("Adj meg egy járatszámot az élő kereséshez");
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [altitudeHistory, setAltitudeHistory] = useState<AltitudeSample[]>([]);
+  const [shareLabel, setShareLabel] = useState("Link másolása");
   const activeQuery = useRef<string | null>(null);
 
   const loadFlight = useCallback(async (flight: string, silent = false) => {
@@ -605,11 +785,45 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    const loadFromUrl = () => {
+      const flight = new URL(window.location.href).searchParams.get("flight")?.trim().toUpperCase() || "";
+      if (!flight) return;
+      setQuery(flight);
+      setTrail([]);
+      setAltitudeHistory([]);
+      void loadFlight(flight);
+    };
+    loadFromUrl();
+    window.addEventListener("popstate", loadFromUrl);
+    return () => window.removeEventListener("popstate", loadFromUrl);
+  }, [loadFlight]);
+
   function submit(event: FormEvent) {
     event.preventDefault();
+    const normalized = query.trim().toUpperCase().replace(/\s+/g, "");
+    if (!normalized) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("flight", normalized);
+    window.history.pushState({}, "", url);
     setTrail([]);
     setAltitudeHistory([]);
-    void loadFlight(query);
+    void loadFlight(normalized);
+  }
+
+  async function shareFlight() {
+    const flight = scheduled?.flight || telemetry?.flight || query.trim().toUpperCase();
+    if (!flight) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("flight", flight);
+    window.history.replaceState({}, "", url);
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setShareLabel("Link kimásolva ✓");
+    } catch {
+      setShareLabel("A link az URL-sávban van");
+    }
+    window.setTimeout(() => setShareLabel("Link másolása"), 2200);
   }
 
 
@@ -622,6 +836,8 @@ export default function Home() {
 
   const secondaryMetrics = useMemo(
     () => telemetry ? [
+      ["Szélesség", `${fmt(Math.abs(telemetry.lat), 4)}° ${telemetry.lat >= 0 ? "N" : "S"}`, ""],
+      ["Hosszúság", `${fmt(Math.abs(telemetry.lon), 4)}° ${telemetry.lon >= 0 ? "E" : "W"}`, ""],
       ["Geometriai magasság", fmt(telemetry.geometricAltitudeM), "m"],
       ["Valós légsebesség", fmt(telemetry.trueAirspeedKmh), "km/h"],
       ["Műszer szerinti sebesség", fmt(telemetry.indicatedAirspeedKmh), "km/h"],
@@ -650,6 +866,15 @@ export default function Home() {
     ] : [],
     [telemetry],
   );
+  const brand = airlineBrand(
+    telemetry?.journey?.airlineName || scheduled?.airlineName,
+    telemetry?.callsign || scheduled?.callsign,
+  );
+  const panelStyle = {
+    "--airline-color": brand.primary,
+    "--airline-secondary": brand.secondary,
+    "--airline-rgb": brand.rgb,
+  } as CSSProperties;
 
   return (
     <main className="app-shell">
@@ -704,10 +929,14 @@ export default function Home() {
           <div className="data-source">{message}</div>
         </div>
 
-        <aside className="flight-panel">
+        <aside className="flight-panel" style={panelStyle}>
           {scheduled ? (
             <>
               <div className="flight-summary">
+                <div className="summary-top">
+                  <div className="airline-brand"><b>{brand.monogram}</b><span>{brand.name}</span></div>
+                  <button className="share-button" onClick={() => void shareFlight()} type="button">↗ {shareLabel}</button>
+                </div>
                 <div className="eyebrow">{status === "active-no-signal" ? "AKTÍV JÁRAT · ÉLŐ JEL NÉLKÜL" : "KÖVETKEZŐ INDULÁS"}</div>
                 <h1>{scheduled.flight}</h1>
                 <div className="route-heading">
@@ -733,6 +962,7 @@ export default function Home() {
                 <div><span>TERMINÁL</span><strong>{scheduled.origin.terminal || "—"}</strong></div>
                 <div><span>KAPU</span><strong>{scheduled.origin.gate || "—"}</strong></div>
               </div>
+              <FlightTimeline scheduled={scheduled} />
               <p className="schedule-note">
                 {status === "active-no-signal"
                   ? "A menetrendi adat szerint a járat már úton van, de jelenleg egyik helyzetforrás sem ad élő koordinátát. A rendszer 15 másodpercenként újrapróbálja, és jel érkezésekor automatikusan térképes követésre vált."
@@ -742,6 +972,10 @@ export default function Home() {
           ) : telemetry ? (
           <>
           <div className="flight-summary">
+            <div className="summary-top">
+              <div className="airline-brand"><b>{brand.monogram}</b><span>{brand.name}</span></div>
+              <button className="share-button" onClick={() => void shareFlight()} type="button">↗ {shareLabel}</button>
+            </div>
             <div className="eyebrow">AKTUÁLIS JÁRAT</div>
             <h1>{telemetry.flight}</h1>
             <div className="route-heading">
@@ -781,25 +1015,28 @@ export default function Home() {
               </div>
             </div>
             <div className="route-progress">
-              <div className="progress-labels">
-                <span>{telemetry.journey ? `${fmt(telemetry.journey.flownKm)} km megtéve` : "Nincs útvonaladat"}</span>
-                <b>{telemetry.journey?.progressPercent == null ? "—" : `${telemetry.journey.progressPercent}%`}</b>
-                <span>{telemetry.journey ? `${fmt(telemetry.journey.remainingKm)} km hátra` : ""}</span>
+              <div className="progress-route-head">
+                <div><b>{telemetry.journey?.origin.iata || telemetry.journey?.origin.icao || "DEP"}</b><span>{telemetry.journey ? `${fmt(telemetry.journey.flownKm)} km megtéve` : "Indulás"}</span></div>
+                <strong>{telemetry.journey?.progressPercent == null ? "—" : `${telemetry.journey.progressPercent}%`}</strong>
+                <div><b>{telemetry.journey?.destination.iata || telemetry.journey?.destination.icao || "ARR"}</b><span>{telemetry.journey ? `${fmt(telemetry.journey.remainingKm)} km hátra` : "Érkezés"}</span></div>
               </div>
-              <div className="progress-track">
+              <div className="progress-track" aria-label={`Az útvonal ${telemetry.journey?.progressPercent ?? 0} százaléka teljesítve`}>
                 <i style={{ width: `${telemetry.journey?.progressPercent ?? 0}%` }} />
+                <span className="progress-origin" />
                 <b style={{ left: `${telemetry.journey?.progressPercent ?? 0}%` }}>✈</b>
+                <span className="progress-destination" />
               </div>
             </div>
           </div>
 
+          <FlightTimeline telemetry={telemetry} />
+
+          <div className="section-kicker metric-kicker">PILLANATNYI REPÜLÉSI ADATOK</div>
           <div className="primary-grid">
             {metric("MAGASSÁG", fmt(telemetry.altitudeM), "m")}
             {metric("SEBESSÉG", fmt(telemetry.groundSpeedKmh), "km/h")}
             {metric("IRÁNY", compass(telemetry.trackDeg))}
             {metric("EMELKEDÉS", fmt(telemetry.verticalRateMs, 1), "m/s", (telemetry.verticalRateMs ?? 0) > 0)}
-            {metric("SZÉLESSÉG", fmt(Math.abs(telemetry.lat), 4), telemetry.lat >= 0 ? "° N" : "° S")}
-            {metric("HOSSZÚSÁG", fmt(Math.abs(telemetry.lon), 4), telemetry.lon >= 0 ? "° E" : "° W")}
           </div>
 
           <div className="signal-row">
