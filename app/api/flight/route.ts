@@ -495,22 +495,49 @@ function shape(
     const effectiveSpeed = speed && speed > 150 ? speed : 750;
     const geographicElapsedMinutes = Math.round((flownKm / effectiveSpeed) * 60);
     const geographicRemainingMinutes = Math.round((remainingKm / effectiveSpeed) * 60);
-    // A pillanatnyi sebesség leszálláskor jelentősen leesik, ezért abból nem
-    // szabad visszaszámolni a teljes repülési időt. Elsődlegesen a szolgáltató
-    // tényleges (ennek hiányában menetrendi) indulási idejét használjuk.
-    const departureAt = dateValue(
-      schedule?.actualDepartureAt
-      || schedule?.estimatedDepartureAt
-      || schedule?.scheduledDepartureAt,
+    // A szolgáltató tényleges indulási ideje a legjobb forrás. Az "estimated"
+    // és "scheduled" idő azonban korai induláskor még a jövőben lehet, miközben
+    // az ADS-B szerint a gép már egyértelműen repül. Ilyenkor a teljes tervezett
+    // repülési idő és az útvonalon megtett arány alapján korrigáljuk az órát.
+    const actualDepartureAt = dateValue(schedule?.actualDepartureAt);
+    const providerDepartureAt = actualDepartureAt || dateValue(
+      schedule?.estimatedDepartureAt || schedule?.scheduledDepartureAt,
     );
-    const arrivalAt = dateValue(
+    const providerArrivalAt = dateValue(
       schedule?.actualArrivalAt
       || schedule?.estimatedArrivalAt
       || schedule?.scheduledArrivalAt,
     );
-    const elapsedMinutes = departureAt
-      ? Math.max(0, Math.round((now - departureAt.getTime()) / 60_000))
+    const providerElapsedMinutes = providerDepartureAt
+      ? Math.max(0, Math.round((now - providerDepartureAt.getTime()) / 60_000))
+      : null;
+    const providerDurationMinutes = providerDepartureAt && providerArrivalAt
+      ? Math.round((providerArrivalAt.getTime() - providerDepartureAt.getTime()) / 60_000)
+      : null;
+    const plausibleDurationMinutes = providerDurationMinutes != null
+      && providerDurationMinutes >= 20
+      && providerDurationMinutes <= 24 * 60
+      ? providerDurationMinutes
+      : null;
+    const routeProgress = totalKm > 0 ? flownKm / totalKm : null;
+    const progressElapsedMinutes = plausibleDurationMinutes != null && routeProgress != null
+      ? Math.round(plausibleDurationMinutes * routeProgress)
       : geographicElapsedMinutes;
+    const clearlyAirborne = (altBaro != null && altBaro > 300) || (speed != null && speed > 150);
+    const providerTimingConflictsWithPosition = !actualDepartureAt
+      && clearlyAirborne
+      && flownKm >= 5
+      && (providerElapsedMinutes == null
+        || progressElapsedMinutes > providerElapsedMinutes + 2);
+    const elapsedMinutes = providerTimingConflictsWithPosition
+      ? Math.max(geographicElapsedMinutes, progressElapsedMinutes)
+      : (providerElapsedMinutes ?? geographicElapsedMinutes);
+    const departureAt = providerTimingConflictsWithPosition || !providerDepartureAt
+      ? new Date(now - elapsedMinutes * 60_000)
+      : providerDepartureAt;
+    const arrivalAt = providerTimingConflictsWithPosition && plausibleDurationMinutes != null
+      ? new Date(departureAt.getTime() + plausibleDurationMinutes * 60_000)
+      : providerArrivalAt;
     const remainingMinutes = arrivalAt
       ? Math.max(0, Math.round((arrivalAt.getTime() - now) / 60_000))
       : geographicRemainingMinutes;
@@ -519,16 +546,19 @@ function shape(
       flownKm: Math.round(flownKm),
       remainingKm: Math.round(remainingKm),
       totalKm: Math.round(totalKm),
-      progressPercent: totalKm > 0 ? Math.round((flownKm / totalKm) * 100) : null,
+      progressPercent: routeProgress == null ? null : Math.round(routeProgress * 100),
       elapsedMinutes,
       remainingMinutes,
-      estimatedDepartureAt: departureAt?.toISOString()
-        || new Date(now - geographicElapsedMinutes * 60_000).toISOString(),
+      estimatedDepartureAt: departureAt.toISOString(),
       estimatedArrivalAt: arrivalAt?.toISOString()
         || new Date(now + geographicRemainingMinutes * 60_000).toISOString(),
-      timingType: departureAt
-        ? "Tényleges vagy menetrendi időadat alapján"
-        : "Becsült, az aktuális helyzet és sebesség alapján",
+      timingType: actualDepartureAt
+        ? "Tényleges indulási idő alapján"
+        : providerTimingConflictsWithPosition
+          ? "Becsült, a menetrendi időtartam és az útvonal előrehaladása alapján"
+          : providerDepartureAt
+            ? "Menetrendi vagy szolgáltatói becslés alapján"
+            : "Becsült, az aktuális helyzet és sebesség alapján",
     };
   }
   return {
