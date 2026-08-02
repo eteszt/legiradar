@@ -58,7 +58,6 @@ type Telemetry = {
     estimatedArrivalAt: string | null;
     timingType: string;
   } | null;
-  demo?: boolean;
 };
 
 type RouteAirport = {
@@ -132,79 +131,6 @@ function weatherFeatureForD3(feature: TurbulenceFeature): TurbulenceFeature {
   return feature;
 }
 
-const demoData: Telemetry = {
-  flight: "W62375",
-  callsign: "WZZ2375",
-  hex: "471F63",
-  lat: 45.7821,
-  lon: 12.4386,
-  altitudeM: 10668,
-  geometricAltitudeM: 10805,
-  groundSpeedKmh: 842,
-  trueAirspeedKmh: 861,
-  indicatedAirspeedKmh: 472,
-  trackDeg: 247,
-  magneticHeadingDeg: 244,
-  trueHeadingDeg: 247,
-  verticalRateMs: 1.2,
-  geometricRateMs: 1.1,
-  mach: 0.79,
-  rollDeg: -0.7,
-  navQnhHpa: 1013.2,
-  selectedAltitudeM: 10973,
-  navHeadingDeg: 247,
-  windSpeedKmh: 74,
-  windDirectionDeg: 302,
-  outsideAirTempC: -51,
-  totalAirTempC: -24,
-  squawk: 5632,
-  category: 3,
-  messages: 28416,
-  rssiDbfs: -18.4,
-  seenSeconds: 0.4,
-  positionAgeSeconds: 0.7,
-  distanceFromReceiverKm: 412,
-  bearingFromReceiverDeg: 261,
-  signalIntegrity: 8,
-  containmentRadiusM: 186,
-  emergency: "nincs",
-  onGround: false,
-  source: "Szimulált bemutatóadat",
-  updatedAt: new Date().toISOString(),
-  journey: {
-    origin: {
-      iata: "BUD",
-      icao: "LHBP",
-      name: "Liszt Ferenc Nemzetközi Repülőtér",
-      city: "Budapest",
-      country: "Magyarország",
-      lat: 47.439,
-      lon: 19.261,
-    },
-    destination: {
-      iata: "BCN",
-      icao: "LEBL",
-      name: "Josep Tarradellas Barcelona–El Prat",
-      city: "Barcelona",
-      country: "Spanyolország",
-      lat: 41.297,
-      lon: 2.083,
-    },
-    airlineName: "Wizz Air",
-    flownKm: 572,
-    remainingKm: 742,
-    totalKm: 1314,
-    progressPercent: 44,
-    elapsedMinutes: 58,
-    remainingMinutes: 53,
-    estimatedDepartureAt: null,
-    estimatedArrivalAt: null,
-    timingType: "Szimulált bemutatóadat",
-  },
-  demo: true,
-};
-
-const budapest: [number, number] = [47.439, 19.261];
 const BUDAPEST_TIME_ZONE = "Europe/Budapest";
 
 function fmt(value: number | null, digits = 0) {
@@ -592,18 +518,12 @@ async function directFlightLookup(flight: string, candidates: string[]): Promise
 }
 
 export default function Home() {
-  const [query, setQuery] = useState("W62375");
-  const [telemetry, setTelemetry] = useState<Telemetry>(demoData);
+  const [query, setQuery] = useState("");
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
   const [scheduled, setScheduled] = useState<ScheduledFlight | null>(null);
-  const [trail, setTrail] = useState<[number, number][]>([
-    budapest,
-    [46.91, 17.82],
-    [46.51, 15.81],
-    [45.96, 13.7],
-    [45.7821, 12.4386],
-  ]);
-  const [status, setStatus] = useState<"demo" | "loading" | "live" | "scheduled" | "active-no-signal" | "error">("demo");
-  const [message, setMessage] = useState("Bemutatóadatok – indíts élő keresést");
+  const [trail, setTrail] = useState<[number, number][]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "live" | "scheduled" | "active-no-signal" | "error">("idle");
+  const [message, setMessage] = useState("Adj meg egy járatszámot az élő kereséshez");
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [altitudeHistory, setAltitudeHistory] = useState<AltitudeSample[]>([]);
   const activeQuery = useRef<string | null>(null);
@@ -612,6 +532,8 @@ export default function Home() {
     const normalized = flight.trim().toUpperCase().replace(/\s+/g, "");
     if (!normalized) return;
     if (!silent) {
+      setTelemetry(null);
+      setScheduled(null);
       setStatus("loading");
       setMessage("Élő ADS-B adatok keresése…");
     }
@@ -668,7 +590,7 @@ export default function Home() {
           setMessage(
             isActiveWithoutSignal
               ? "A járat aktív, de jelenleg nincs elérhető élő pozíciójel"
-              : "A repülőgép még nem szállt fel · Aviationstack menetrendi adat",
+              : schedulePayload.scheduled.source,
           );
           setLastSync(new Date());
           // Az aktív, de jel nélküli járatot tovább keressük, így az élő jel
@@ -690,16 +612,6 @@ export default function Home() {
     void loadFlight(query);
   }
 
-  function restoreDemo() {
-    activeQuery.current = null;
-    setTelemetry({ ...demoData, updatedAt: new Date().toISOString() });
-    setScheduled(null);
-    setTrail([budapest, [46.91, 17.82], [46.51, 15.81], [45.96, 13.7], [45.7821, 12.4386]]);
-    setAltitudeHistory([{ at: Date.now(), altitudeM: demoData.altitudeM || 0 }]);
-    setStatus("demo");
-    setMessage("Bemutatóadatok – a működés szemléltetésére");
-    setLastSync(new Date());
-  }
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -709,7 +621,7 @@ export default function Home() {
   }, [loadFlight]);
 
   const secondaryMetrics = useMemo(
-    () => [
+    () => telemetry ? [
       ["Geometriai magasság", fmt(telemetry.geometricAltitudeM), "m"],
       ["Valós légsebesség", fmt(telemetry.trueAirspeedKmh), "km/h"],
       ["Műszer szerinti sebesség", fmt(telemetry.indicatedAirspeedKmh), "km/h"],
@@ -735,7 +647,7 @@ export default function Home() {
       ["Vevőhöz viszonyított irány", fmt(telemetry.bearingFromReceiverDeg), "°"],
       ["Jelintegritás (NIC)", fmt(telemetry.signalIntegrity), ""],
       ["Bizonytalansági sugár", fmt(telemetry.containmentRadiusM), "m"],
-    ],
+    ] : [],
     [telemetry],
   );
 
@@ -761,7 +673,7 @@ export default function Home() {
         </form>
         <div className={`live-pill ${status}`}>
           <i />
-          {status === "live" ? "ÉLŐ" : status === "active-no-signal" ? "AKTÍV · NINCS JEL" : status === "scheduled" ? "MENETREND" : status === "loading" ? "KAPCSOLÓDÁS" : status === "error" ? "NINCS JEL" : "DEMO"}
+          {status === "live" ? "ÉLŐ" : status === "active-no-signal" ? "AKTÍV · NINCS JEL" : status === "scheduled" ? "MENETREND" : status === "loading" ? "KAPCSOLÓDÁS" : status === "error" ? "NINCS JEL" : "KERESÉSRE KÉSZ"}
         </div>
       </header>
 
@@ -774,8 +686,15 @@ export default function Home() {
               <strong>{scheduled.origin.iata || scheduled.origin.icao || "—"} → {scheduled.destination.iata || scheduled.destination.icao || "—"}</strong>
               <p>{scheduled.origin.airport || "Indulási repülőtér"} → {scheduled.destination.airport || "Célrepülőtér"}</p>
             </div>
-          ) : (
+          ) : telemetry ? (
             <RadarMap telemetry={telemetry} trail={trail} />
+          ) : (
+            <div className="scheduled-map empty-state">
+              <div className="scheduled-plane">⌖</div>
+              <span>{status === "loading" ? "JÁRAT KERESÉSE" : "LÉGIRADAR"}</span>
+              <strong>{status === "loading" ? "Kapcsolódás…" : "Adj meg egy járatszámot"}</strong>
+              <p>{status === "loading" ? "Az élő ADS-B és menetrendi adatforrások ellenőrzése folyamatban van." : "Például: W62375, TK6534 vagy RYR123"}</p>
+            </div>
           )}
           <div className="scanline" aria-hidden="true" />
           <div className="map-status">
@@ -820,7 +739,7 @@ export default function Home() {
                   : "A gép jelenleg nem sugároz élő pozíciót. Felszállás után egy új kereséskor a nézet automatikusan átvált a térképes követésre."}
               </p>
             </>
-          ) : (
+          ) : telemetry ? (
           <>
           <div className="flight-summary">
             <div className="eyebrow">AKTUÁLIS JÁRAT</div>
@@ -835,7 +754,7 @@ export default function Home() {
                 ? `${telemetry.journey.origin.city} → ${telemetry.journey.destination.city}`
                 : "Ehhez a járathoz nincs nyilvános útvonaladat"}
             </div>
-            <div className="callsign">{telemetry.callsign} · ICAO24 {telemetry.hex}</div>
+            <div className="callsign">{telemetry.journey?.airlineName || "Légitársaság nem ismert"} · {telemetry.callsign} · ICAO24 {telemetry.hex}</div>
             <div className="phase">
               {telemetry.onGround ? "FÖLDÖN" : telemetry.verticalRateMs != null && telemetry.verticalRateMs > 1 ? "EMELKEDIK" : telemetry.verticalRateMs != null && telemetry.verticalRateMs < -1 ? "SÜLLYED" : "ÚTON"}
               <b>•</b> {!telemetry.emergency || ["nincs", "none"].includes(telemetry.emergency.toLowerCase()) ? "RENDBEN" : telemetry.emergency.toUpperCase()}
@@ -890,17 +809,23 @@ export default function Home() {
 
           <AltitudeChart samples={altitudeHistory} currentAltitude={telemetry.altitudeM} />
           </>
+          ) : (
+            <div className="flight-summary empty-summary">
+              <div className="eyebrow">JÁRATKERESŐ</div>
+              <h1>—</h1>
+              <div className="route-cities">A járat adatai a keresés után jelennek meg.</div>
+            </div>
           )}
         </aside>
       </section>
 
-      {!scheduled && <section className="details">
+      {telemetry && !scheduled && <section className="details">
         <div className="details-title">
           <div>
             <span className="eyebrow">TELJES TELEMETRIA</span>
             <h2>Minden elérhető számszerű adat</h2>
           </div>
-          {status === "error" && <button className="ghost-button" onClick={restoreDemo}>Bemutató mód</button>}
+
         </div>
         <div className="details-grid">
           {secondaryMetrics.map(([label, value, unit]) => metric(label, value, unit))}

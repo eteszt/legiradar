@@ -26,6 +26,7 @@ type RouteLookup = {
 };
 
 type AviationstackFlight = {
+  inferred?: boolean;
   flight_date?: string;
   flight_status?: string;
   departure?: {
@@ -327,6 +328,74 @@ function normalizedAirportDate(value: string | null | undefined, timeZone: strin
   return airportDateValue(value, timeZone)?.toISOString() || null;
 }
 
+function shiftAirportTimestamp(value: string | null | undefined, days: number) {
+  if (!value) return null;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(T.*)$/);
+  if (!match) return null;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + days));
+  return `${date.toISOString().slice(0, 10)}${match[4]}`;
+}
+
+function inferNextOccurrence(items: AviationstackFlight[], now: number): AviationstackFlight | null {
+  const history = items
+    .filter((candidate) => {
+      const departure = airportDateValue(
+        candidate.departure?.actual || candidate.departure?.estimated || candidate.departure?.scheduled,
+        candidate.departure?.timezone,
+      );
+      const status = String(candidate.flight_status || "").toLowerCase();
+      return departure != null && departure.getTime() < now && status !== "cancelled";
+    })
+    .sort((a, b) => {
+      const aTime = airportDateValue(a.departure?.scheduled, a.departure?.timezone)?.getTime() ?? 0;
+      const bTime = airportDateValue(b.departure?.scheduled, b.departure?.timezone)?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+  const template = history[0];
+  if (!template?.departure?.scheduled) return null;
+
+  const occurrenceTimes = Array.from(new Set(history
+    .map((candidate) => airportDateValue(candidate.departure?.scheduled, candidate.departure?.timezone)?.getTime())
+    .filter((value): value is number => value != null)))
+    .sort((a, b) => b - a);
+  const gaps = occurrenceTimes.slice(0, -1)
+    .map((value, index) => Math.round((value - occurrenceTimes[index + 1]) / 86_400_000))
+    .filter((days) => days >= 1 && days <= 14);
+  // Több közelmúltbeli előfordulásból felismerhető a napi/kétnapi ritmus.
+  // Egyetlen adatpontnál a heti ismétlődés a legóvatosabb feltételezés.
+  const intervalDays = gaps.length ? Math.min(...gaps) : 7;
+
+  for (let shiftDays = intervalDays; shiftDays <= 28; shiftDays += intervalDays) {
+    const scheduledDeparture = shiftAirportTimestamp(template.departure.scheduled, shiftDays);
+    const candidateDeparture = airportDateValue(scheduledDeparture, template.departure.timezone);
+    if (!candidateDeparture || candidateDeparture.getTime() <= now) continue;
+    const shift = (value: string | null | undefined) => shiftAirportTimestamp(value, shiftDays);
+    return {
+      ...template,
+      inferred: true,
+      flight_date: scheduledDeparture?.slice(0, 10),
+      flight_status: "scheduled",
+      departure: {
+        ...template.departure,
+        scheduled: scheduledDeparture,
+        estimated: scheduledDeparture,
+        actual: null,
+        delay: null,
+        gate: null,
+      },
+      arrival: template.arrival ? {
+        ...template.arrival,
+        scheduled: shift(template.arrival.scheduled),
+        estimated: shift(template.arrival.scheduled),
+        actual: null,
+        gate: null,
+      } : undefined,
+      live: null,
+    };
+  }
+  return null;
+}
+
 async function fetchScheduledFlight(flight: string, candidates: string[]): Promise<ScheduledFlightInfo | null> {
   const cacheKey = `${flight}:${candidates.join(",")}`;
   const cached = scheduleCache.get(cacheKey);
@@ -353,7 +422,8 @@ async function fetchScheduledFlight(flight: string, candidates: string[]): Promi
   if (payload.error) throw new Error(payload.error.message || "A menetrendi lekérdezés sikertelen.");
 
   const now = Date.now();
-  const item = (payload.data || [])
+  const availableFlights = payload.data || [];
+  let item: AviationstackFlight | null = availableFlights
     .filter((candidate) => {
       const departure = airportDateValue(
         candidate.departure?.estimated || candidate.departure?.scheduled,
@@ -363,7 +433,7 @@ async function fetchScheduledFlight(flight: string, candidates: string[]): Promi
       if (["landed", "cancelled"].includes(status) || departure == null) return false;
       return status === "active"
         ? departure.getTime() >= now - 18 * 60 * 60 * 1000
-        : departure.getTime() >= now - 6 * 60 * 60 * 1000;
+        : departure.getTime() >= now;
     })
     .sort((a, b) => {
       const aActive = String(a.flight_status || "").toLowerCase() === "active" ? 0 : 1;
@@ -377,7 +447,9 @@ async function fetchScheduledFlight(flight: string, candidates: string[]): Promi
           b.departure?.estimated || b.departure?.scheduled,
           b.departure?.timezone,
         )?.getTime() ?? Infinity);
-    })[0];
+    })[0] ?? null;
+
+  if (!item) item = inferNextOccurrence(availableFlights, now);
 
   if (!item) {
     scheduleCache.set(cacheKey, { expiresAt: now + 5 * 60_000, value: null });
@@ -427,7 +499,9 @@ async function fetchScheduledFlight(flight: string, candidates: string[]): Promi
       verticalRateMs: number(item.live?.speed_vertical),
       onGround: Boolean(item.live?.is_ground),
     } : null,
-    source: "Aviationstack menetrendi adat",
+    source: item.inferred
+      ? "Korábbi Aviationstack menetrendből becsült következő indulás"
+      : "Aviationstack menetrendi adat",
   };
   scheduleCache.set(cacheKey, { expiresAt: now + 15 * 60_000, value: result });
   return result;
