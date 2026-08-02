@@ -286,6 +286,10 @@ async function fetchRouteLookup(callsigns: string[]): Promise<RouteLookup> {
 }
 
 async function resolveAirlineIcao(iata: string): Promise<string | null> {
+  // A kézzel karbantartott lista a jelenlegi operatív ICAO-kódokat tartalmazza;
+  // ezt részesítjük előnyben az airline-codes csomag esetenként elavult adataival
+  // szemben (például W4: WMT, nem WER).
+  if (operators[iata]) return operators[iata];
   const localMatch = (
     airlines as Array<{ iata?: string; icao?: string; active?: string }>
   ).find(
@@ -302,10 +306,28 @@ async function resolveFlightNumber(input: string) {
   const normalized = input.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const iataMatch = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
   const airlineIcao = iataMatch ? await resolveAirlineIcao(iataMatch[1]) : null;
-  const candidates = staticCallsignCandidates(normalized, airlineIcao);
+  const staticCandidates = staticCallsignCandidates(normalized, airlineIcao);
+  // A kereskedelmi járatszámból képzett hívójel nem mindig egyezik az adott
+  // napon használt operatív callsignnal (pl. számok helyett betűs rövidítés).
+  // Az ADSBDB járatútvonal-feloldása mindkét azonosítót visszaadhatja, ezért
+  // még az élő pozíció keresése előtt hozzáadjuk ezeket a jelölteket.
+  const routeLookup = await fetchRouteLookup(staticCandidates);
+  const resolvedIata = routeLookup.callsignIata;
+  const resolvedIcao = routeLookup.callsignIcao;
+  const resolvedOperator = resolvedIcao?.match(/^([A-Z]{3})/)?.[1] || airlineIcao;
+  const resolvedCandidates = resolvedIata
+    ? staticCallsignCandidates(resolvedIata, resolvedOperator)
+    : [];
+  const candidates = Array.from(new Set([
+    resolvedIcao,
+    ...resolvedCandidates,
+    ...staticCandidates,
+    resolvedIata,
+  ].filter((candidate): candidate is string => Boolean(candidate))));
   return {
-    candidates: Array.from(new Set(candidates.filter(Boolean))),
-    route: null,
+    candidates,
+    routeLookup,
+    flightNumber: resolvedIata || (iataMatch ? normalized : null),
     resolvedAirlineIcao: airlineIcao,
   };
 }
@@ -748,10 +770,11 @@ export async function GET(request: NextRequest) {
 
   const resolved = await resolveFlightNumber(flight);
   const candidates = resolved.candidates;
+  const scheduleFlight = resolved.flightNumber || flight;
 
   if (request.nextUrl.searchParams.get("schedule") === "1") {
     try {
-      const scheduled = await fetchScheduledFlight(flight, candidates);
+      const scheduled = await fetchScheduledFlight(scheduleFlight, candidates);
       if (!scheduled) {
         return NextResponse.json({ error: `A ${flight} járathoz nem található közelgő indulás.` }, { status: 404 });
       }
@@ -778,22 +801,21 @@ export async function GET(request: NextRequest) {
         provider,
       }))),
     );
-    const routeLookup = await fetchRouteLookup([
-      String(found.aircraft.flight || "").trim().toUpperCase(),
-      found.callsign,
-      flight,
-    ].filter(Boolean));
+    const liveCallsign = String(found.aircraft.flight || "").trim().toUpperCase();
+    const routeLookup = resolved.routeLookup.route
+      ? resolved.routeLookup
+      : await fetchRouteLookup([liveCallsign, found.callsign, ...candidates].filter(Boolean));
     let verifiedRoute: FlightRoute | null = null;
     let verifiedSchedule: ScheduledFlightInfo | null = null;
     try {
-      verifiedSchedule = await fetchScheduledFlight(flight, candidates);
+      verifiedSchedule = await fetchScheduledFlight(scheduleFlight, candidates);
       verifiedRoute = await routeFromSchedule(verifiedSchedule);
     } catch {
       // A telemetria menetrendi adat nélkül is megjeleníthető.
     }
     const data = shape(
       found.aircraft,
-      flight,
+      verifiedSchedule?.flight || resolved.flightNumber || flight,
       `${found.provider.label} · szerverkapcsolat`,
       verifiedRoute || routeLookup.route,
       verifiedSchedule,
@@ -814,9 +836,11 @@ export async function GET(request: NextRequest) {
   // nem ad vissza callsign alapján, miközben a menetrendi szolgáltató élő
   // koordinátát közöl. Ilyenkor ezt használjuk tartalékként.
   try {
-    const schedule = await fetchScheduledFlight(flight, candidates);
+    const schedule = await fetchScheduledFlight(scheduleFlight, candidates);
     const scheduledRoute = await routeFromSchedule(schedule);
-    const liveData = schedule ? shapeScheduledLive(schedule, flight, scheduledRoute) : null;
+    const liveData = schedule
+      ? shapeScheduledLive(schedule, schedule.flight || resolved.flightNumber || flight, scheduledRoute)
+      : null;
     if (liveData) {
       return NextResponse.json({
         data: liveData,
@@ -847,7 +871,7 @@ export async function GET(request: NextRequest) {
           const found = await Promise.any(identityRequests);
           const data = shape(
             found.aircraft,
-            flight,
+            schedule.flight || resolved.flightNumber || flight,
             `${found.label} · repülőgép-azonosító alapján`,
             scheduledRoute,
             schedule,
