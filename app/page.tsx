@@ -85,6 +85,20 @@ type ScheduledFlight = {
   actualArrivalAt: string | null;
   delayMinutes: number | null;
   source: string;
+  route: {
+    origin: RouteAirport;
+    destination: RouteAirport;
+    airlineName: string | null;
+  } | null;
+};
+
+type WeatherFlight = {
+  lat: number;
+  lon: number;
+  altitudeM: number | null;
+  updatedAt: string;
+  journey: NonNullable<Telemetry["journey"]>;
+  preflight?: boolean;
 };
 
 type TurbulenceFeature = {
@@ -318,7 +332,18 @@ function offsetPoint(point: [number, number], distanceKm: number, bearingDeg: nu
   return [((lon2 * 180 / Math.PI + 540) % 360) - 180, lat2 * 180 / Math.PI];
 }
 
-function remainingRouteSamples(telemetry: Telemetry, sampleCount = 201): RouteSample[] {
+function greatCircleKm(from: [number, number], to: [number, number]) {
+  const toRad = (value: number) => value * Math.PI / 180;
+  const [lon1, lat1] = from.map(toRad);
+  const [lon2, lat2] = to.map(toRad);
+  const dLat = lat2 - lat1;
+  const dLon = lon2 - lon1;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function remainingRouteSamples(telemetry: WeatherFlight, sampleCount = 201): RouteSample[] {
   if (!telemetry.journey) return [];
   const start: [number, number] = [telemetry.lon, telemetry.lat];
   const destination: [number, number] = [telemetry.journey.destination.lon, telemetry.journey.destination.lat];
@@ -369,7 +394,7 @@ function temporalRelationship(
   return { temporalStatus: "overlaps" as const, temporallyRelevant: true };
 }
 
-function routeWeatherImpacts(features: TurbulenceFeature[], telemetry: Telemetry) {
+function routeWeatherImpacts(features: TurbulenceFeature[], telemetry: WeatherFlight) {
   const journey = telemetry.journey;
   if (!journey) return [];
   const samples = remainingRouteSamples(telemetry);
@@ -457,7 +482,7 @@ function FlightConditionsPanel({
   error,
   updatedAt,
 }: {
-  telemetry: Telemetry;
+  telemetry: WeatherFlight;
   impacts: RouteWeatherImpact[];
   loading: boolean;
   error: string | null;
@@ -465,27 +490,40 @@ function FlightConditionsPanel({
 }) {
   const relevant = impacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant);
   const severe = relevant.some((impact) => severityLevel(impact) === "severe");
-  const state = loading ? "loading" : error ? "unavailable" : severe ? "severe" : relevant.length > 0 ? "attention" : "clear";
+  const preflight = Boolean(telemetry.preflight);
+  const weatherIssuedMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+  const plannedDepartureMs = Date.parse(telemetry.updatedAt);
+  const outsideForecastHorizon = preflight
+    && Number.isFinite(weatherIssuedMs)
+    && Number.isFinite(plannedDepartureMs)
+    && plannedDepartureMs > weatherIssuedMs + 24 * 60 * 60_000;
+  const state = loading ? "loading" : error ? "unavailable" : outsideForecastHorizon ? "future" : severe ? "severe" : relevant.length > 0 ? "attention" : "clear";
   const title = loading
-    ? "Repülési körülmények elemzése…"
+    ? preflight ? "Útvonal-időjárás előzetes elemzése…" : "Repülési körülmények elemzése…"
     : error
       ? "Az időjárási elemzés nem elérhető"
+      : outsideForecastHorizon
+        ? "Az indulás még túl távoli a rövid távú előrejelzéshez"
       : severe
-        ? "Jelentős veszélyjelzés az útvonal előtt"
+        ? preflight ? "Jelentős veszélyjelzés a tervezett útvonalon" : "Jelentős veszélyjelzés az útvonal előtt"
         : relevant.length > 0
-          ? "Figyelmet igénylő útvonalszakasz"
-          : "Kedvező repülési körülmények";
+          ? preflight ? "Várhatóan érintett útvonalszakasz" : "Figyelmet igénylő útvonalszakasz"
+          : preflight ? "Nincs jelenleg érvényes veszélyjelzés az útvonalra" : "Kedvező repülési körülmények";
   const message = error
-    || (relevant.length > 0
-      ? `${relevant.length} időben és magasságban releváns veszélyszakasz található a hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában.`
+    || (outsideForecastHorizon
+      ? "A SIGMET és G-AIRMET közlemények rövid távra érvényesek, ezért ehhez az indulási időponthoz még nem adható megbízható útvonalértékelés. Az oldal az indulás közeledtével automatikusan az akkor aktuális közleményeket vizsgálja."
+      : relevant.length > 0
+      ? `${relevant.length} várhatóan releváns veszélyszakasz található a ${preflight ? "tervezett" : "hátralévő"} útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában.`
       : impacts.length > 0
-        ? `A folyosó ${impacts.length} jelzett területet érint, de azok várhatóan nem aktívak az odaéréskor vagy nem a jelenlegi repülési szintre vonatkoznak.`
-        : `A hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs aktuálisan releváns turbulenciajelzés.`);
+        ? `A folyosó ${impacts.length} jelzett területet érint, de azok várhatóan nem aktívak az odaéréskor vagy nem a vizsgált repülési szintre vonatkoznak.`
+        : preflight
+          ? `A jelenlegi SIGMET és G-AIRMET közlemények alapján a tervezett útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs az utazás várható idejére érvényes turbulenciajelzés.`
+          : `A hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs aktuálisan releváns turbulenciajelzés.`);
 
   return (
     <section className={`flight-conditions ${state}`} aria-label="Repülési körülmények összefoglaló">
       <div className="conditions-heading">
-        <div className="conditions-icon">{state === "clear" ? "✓" : state === "loading" ? "◌" : state === "unavailable" ? "?" : "!"}</div>
+        <div className="conditions-icon">{state === "clear" ? "✓" : state === "loading" ? "◌" : state === "unavailable" ? "?" : state === "future" ? "◷" : "!"}</div>
         <div>
           <span>REPÜLÉSI KÖRÜLMÉNYEK</span>
           <h2>{title}</h2>
@@ -495,7 +533,7 @@ function FlightConditionsPanel({
       <div className="conditions-stats">
         <div><span>ÚTVONALFOLYOSÓ</span><strong>±{ROUTE_CORRIDOR_HALF_WIDTH_KM} km</strong></div>
         <div><span>AKTÍV TALÁLAT</span><strong>{loading ? "—" : relevant.length}</strong></div>
-        <div><span>REPÜLÉSI SZINT</span><strong>{telemetry.altitudeM == null ? "—" : `FL${Math.round(telemetry.altitudeM / 30.48)}`}</strong></div>
+        <div><span>{preflight ? "ELEMZÉS" : "REPÜLÉSI SZINT"}</span><strong>{preflight ? "INDULÁS ELŐTT" : telemetry.altitudeM == null ? "—" : `FL${Math.round(telemetry.altitudeM / 30.48)}`}</strong></div>
       </div>
       {!loading && impacts.slice(0, 4).map((impact) => {
         const actuallyRelevant = impact.altitudeRelevant && impact.temporallyRelevant;
@@ -521,7 +559,7 @@ function FlightConditionsPanel({
         );
       })}
       {impacts.length > 4 && <small className="more-hazards">További {impacts.length - 4} útvonal-metszés a térképen látható.</small>}
-      <footer>NOAA/NWS SIGMET és G-AIRMET · {updatedAt ? `frissítve ${new Date(updatedAt).toLocaleTimeString("hu-HU", { timeZone: BUDAPEST_TIME_ZONE, hour: "2-digit", minute: "2-digit" })}` : "frissítés folyamatban"} · döntéstámogató becslés</footer>
+      <footer>NOAA/NWS SIGMET és G-AIRMET · {updatedAt ? `frissítve ${new Date(updatedAt).toLocaleTimeString("hu-HU", { timeZone: BUDAPEST_TIME_ZONE, hour: "2-digit", minute: "2-digit" })}` : "frissítés folyamatban"} · {preflight ? "előzetes útvonalbecslés, indulás előtt frissítendő" : "döntéstámogató becslés"}</footer>
     </section>
   );
 }
@@ -682,7 +720,7 @@ function RadarMap({
   const destinationPoint = journey ? projection([journey.destination.lon, journey.destination.lat]) : null;
   const pastPoints = originPoint ? [originPoint, ...points, current] : [...points, current];
   const pastRoute = pastPoints.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ");
-  const routeSamples = journey ? remainingRouteSamples(telemetry) : [];
+  const routeSamples = journey ? remainingRouteSamples({ ...telemetry, journey }) : [];
   const projectedRouteSamples = routeSamples.map((sample) => projection(sample.point)).filter(Boolean) as [number, number][];
   const futureRoute = projectedRouteSamples.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ");
   const projectedCorridor = routeCorridorPolygon(routeSamples).map((point) => projection(point)).filter(Boolean) as [number, number][];
@@ -1076,8 +1114,52 @@ export default function Home() {
     }
   }, []);
 
-  const weatherRouteKey = telemetry?.journey
-    ? `${telemetry.flight}-${telemetry.journey.origin.icao}-${telemetry.journey.destination.icao}`
+  const weatherFlight = useMemo<WeatherFlight | null>(() => {
+    if (telemetry?.journey) {
+      return { ...telemetry, journey: telemetry.journey, preflight: false };
+    }
+    if (!scheduled?.route) return null;
+    const { origin, destination, airlineName } = scheduled.route;
+    const totalKm = greatCircleKm([origin.lon, origin.lat], [destination.lon, destination.lat]);
+    const departureAt = scheduled.actualDepartureAt
+      || scheduled.estimatedDepartureAt
+      || scheduled.scheduledDepartureAt;
+    const arrivalAt = scheduled.actualArrivalAt
+      || scheduled.estimatedArrivalAt
+      || scheduled.scheduledArrivalAt;
+    const departureMs = departureAt ? Date.parse(departureAt) : Number.NaN;
+    const arrivalMs = arrivalAt ? Date.parse(arrivalAt) : Number.NaN;
+    const scheduledDuration = Number.isFinite(departureMs) && Number.isFinite(arrivalMs) && arrivalMs > departureMs
+      ? Math.round((arrivalMs - departureMs) / 60_000)
+      : null;
+    const durationMinutes = scheduledDuration ?? Math.max(20, Math.round(totalKm / 750 * 60));
+    const loadedAtMs = lastSync?.getTime() ?? (Number.isFinite(departureMs) ? departureMs : 0);
+    const referenceMs = Number.isFinite(departureMs) ? Math.max(loadedAtMs, departureMs) : loadedAtMs;
+    return {
+      lat: origin.lat,
+      lon: origin.lon,
+      altitudeM: null,
+      updatedAt: new Date(referenceMs).toISOString(),
+      preflight: true,
+      journey: {
+        origin,
+        destination,
+        airlineName,
+        flownKm: 0,
+        remainingKm: Math.round(totalKm),
+        totalKm: Math.round(totalKm),
+        progressPercent: 0,
+        elapsedMinutes: 0,
+        remainingMinutes: durationMinutes,
+        estimatedDepartureAt: departureAt,
+        estimatedArrivalAt: arrivalAt,
+        timingType: scheduled.source,
+      },
+    };
+  }, [lastSync, scheduled, telemetry]);
+
+  const weatherRouteKey = weatherFlight
+    ? `${scheduled?.flight || telemetry?.flight}-${weatherFlight.journey.origin.icao}-${weatherFlight.journey.destination.icao}-${weatherFlight.preflight ? "preflight" : "live"}`
     : "";
 
   useEffect(() => {
@@ -1130,8 +1212,8 @@ export default function Home() {
     [telemetry],
   );
   const weatherImpacts = useMemo(
-    () => telemetry?.journey ? routeWeatherImpacts(turbulence, telemetry) : [],
-    [telemetry, turbulence],
+    () => weatherFlight ? routeWeatherImpacts(turbulence, weatherFlight) : [],
+    [turbulence, weatherFlight],
   );
   const brand = airlineBrand(
     telemetry?.journey?.airlineName || scheduled?.airlineName,
@@ -1238,6 +1320,15 @@ export default function Home() {
                 <div><span>KAPU</span><strong>{scheduled.origin.gate || "—"}</strong></div>
               </div>
               <FlightTimeline scheduled={scheduled} />
+              {weatherFlight?.preflight && (
+                <FlightConditionsPanel
+                  telemetry={weatherFlight}
+                  impacts={weatherImpacts}
+                  loading={weatherLoading}
+                  error={weatherError}
+                  updatedAt={weatherUpdatedAt}
+                />
+              )}
               <p className="schedule-note">
                 {status === "active-no-signal"
                   ? "A menetrendi adat szerint a járat már úton van, de jelenleg egyik helyzetforrás sem ad élő koordinátát. A rendszer 15 másodpercenként újrapróbálja, és jel érkezésekor automatikusan térképes követésre vált."
@@ -1306,9 +1397,9 @@ export default function Home() {
 
           <FlightTimeline telemetry={telemetry} />
 
-          {telemetry.journey && (
+          {weatherFlight && !weatherFlight.preflight && (
             <FlightConditionsPanel
-              telemetry={telemetry}
+              telemetry={weatherFlight}
               impacts={weatherImpacts}
               loading={weatherLoading}
               error={weatherError}

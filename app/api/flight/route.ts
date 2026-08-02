@@ -752,9 +752,11 @@ export async function GET(request: NextRequest) {
   if (request.nextUrl.searchParams.get("schedule") === "1") {
     try {
       const scheduled = await fetchScheduledFlight(flight, candidates);
-      return scheduled
-        ? NextResponse.json({ scheduled, searchedCallsigns: candidates })
-        : NextResponse.json({ error: `A ${flight} járathoz nem található közelgő indulás.` }, { status: 404 });
+      if (!scheduled) {
+        return NextResponse.json({ error: `A ${flight} járathoz nem található közelgő indulás.` }, { status: 404 });
+      }
+      const route = await routeFromSchedule(scheduled);
+      return NextResponse.json({ scheduled: { ...scheduled, route }, searchedCallsigns: candidates });
     } catch (error) {
       return NextResponse.json(
         { error: error instanceof Error ? error.message : "A menetrendi adatforrás nem elérhető." },
