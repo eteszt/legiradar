@@ -388,13 +388,23 @@ function greatCircleKm(from: [number, number], to: [number, number]) {
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function greatCircleCoordinates(
+  start: [number, number],
+  end: [number, number],
+  sampleCount = 201,
+): [number, number][] {
+  const interpolate = geoInterpolate(start, end);
+  return Array.from({ length: Math.max(2, sampleCount) }, (_, index) =>
+    interpolate(index / (Math.max(2, sampleCount) - 1)) as [number, number],
+  );
+}
+
 function remainingRouteSamples(telemetry: WeatherFlight, sampleCount = 201): RouteSample[] {
   if (!telemetry.journey) return [];
   const start: [number, number] = [telemetry.lon, telemetry.lat];
   const destination: [number, number] = [telemetry.journey.destination.lon, telemetry.journey.destination.lat];
-  const interpolate = geoInterpolate(start, destination);
   const currentProgress = telemetry.journey.progressPercent ?? 0;
-  const points = Array.from({ length: sampleCount }, (_, index) => interpolate(index / (sampleCount - 1)) as [number, number]);
+  const points = greatCircleCoordinates(start, destination, sampleCount);
   return points.map((point, index) => {
     const previous = points[Math.max(0, index - 1)] || point;
     const next = points[Math.min(points.length - 1, index + 1)] || point;
@@ -904,20 +914,31 @@ function RadarMap({
   const activeImpactIndexes = new Set(weatherImpacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant).map((impact) => impact.index));
   const relevantWeatherImpacts = weatherImpacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant);
   const nextWeatherImpact = relevantWeatherImpacts[0] || weatherImpacts[0];
-  const routeCoordinates = journey
-    ? [
-        [journey.origin.lon, journey.origin.lat],
-        [telemetry.lon, telemetry.lat],
-        [journey.destination.lon, journey.destination.lat],
-      ]
+  const fullRouteCoordinates = journey
+    ? greatCircleCoordinates(
+      [journey.origin.lon, journey.origin.lat],
+      [journey.destination.lon, journey.destination.lat],
+      241,
+    )
     : null;
+  const routeMidpoint = fullRouteCoordinates?.[Math.floor(fullRouteCoordinates.length / 2)] || null;
   const center: [number, number] = [telemetry.lon, telemetry.lat];
   const projection = geoMercator();
-  if (routeCoordinates) {
-    projection.fitExtent(
-      [[100, 90], [1000, 650]],
-      { type: "LineString", coordinates: routeCoordinates } as never,
-    );
+  if (fullRouteCoordinates && routeMidpoint) {
+    // A nagykör középpontját forgatjuk a térkép közepére. Így az útvonal
+    // dátumválasztó-vonalon áthaladó része nem a Mercator-vetület szélén szakad el.
+    projection
+      .rotate([-routeMidpoint[0], 0])
+      .fitExtent(
+        [[100, 90], [1000, 650]],
+        {
+          type: "GeometryCollection",
+          geometries: [
+            { type: "LineString", coordinates: fullRouteCoordinates },
+            { type: "Point", coordinates: [telemetry.lon, telemetry.lat] },
+          ],
+        } as never,
+      );
   } else {
     projection
       .center(center)
@@ -929,25 +950,31 @@ function RadarMap({
     world as never,
     (world.objects as unknown as { countries: never }).countries,
   );
-  const points = trail.map(([lat, lon]) => projection([lon, lat])).filter(Boolean) as [number, number][];
   const current = projection([telemetry.lon, telemetry.lat]) ?? [dimensions.width / 2, dimensions.height / 2];
   const originPoint = journey ? projection([journey.origin.lon, journey.origin.lat]) : null;
   const destinationPoint = journey ? projection([journey.destination.lon, journey.destination.lat]) : null;
-  const pastPoints = originPoint ? [originPoint, ...points, current] : [...points, current];
-  const pastRoute = pastPoints.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ");
+  const pastCoordinates = journey
+    ? greatCircleCoordinates([journey.origin.lon, journey.origin.lat], [telemetry.lon, telemetry.lat], 181)
+    : [...trail.map(([lat, lon]): [number, number] => [lon, lat]), [telemetry.lon, telemetry.lat] as [number, number]];
+  const pastRoute = pastCoordinates.length > 1
+    ? path({ type: "LineString", coordinates: pastCoordinates } as never) ?? ""
+    : "";
   const routeSamples = journey ? remainingRouteSamples({ ...telemetry, journey }) : [];
-  const projectedRouteSamples = routeSamples.map((sample) => projection(sample.point)).filter(Boolean) as [number, number][];
-  const futureRoute = projectedRouteSamples.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ");
-  const projectedCorridor = routeCorridorPolygon(routeSamples).map((point) => projection(point)).filter(Boolean) as [number, number][];
-  const corridorPath = projectedCorridor.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ") + (projectedCorridor.length ? " Z" : "");
+  const futureCoordinates = routeSamples.map((sample) => sample.point);
+  const futureRoute = futureCoordinates.length > 1
+    ? path({ type: "LineString", coordinates: futureCoordinates } as never) ?? ""
+    : "";
+  const corridorCoordinates = routeCorridorPolygon(routeSamples);
+  const corridorPath = corridorCoordinates.length > 3
+    ? path({ type: "Polygon", coordinates: [corridorCoordinates] } as never) ?? ""
+    : "";
   const impactSegments = weatherImpacts.map((impact) => {
     const segment = routeSamples
       .filter((sample) => sample.routePercent >= impact.entryPercent && sample.routePercent <= impact.exitPercent)
-      .map((sample) => projection(sample.point))
-      .filter(Boolean) as [number, number][];
+      .map((sample) => sample.point);
     return {
       ...impact,
-      path: segment.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" "),
+      path: segment.length > 1 ? path({ type: "LineString", coordinates: segment } as never) ?? "" : "",
       entry: projection(impact.entryPoint),
       exit: projection(impact.exitPoint),
     };
