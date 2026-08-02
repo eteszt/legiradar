@@ -803,14 +803,14 @@ export default function Home() {
               <div className="departure-card">
                 <span>{status === "active-no-signal" ? "INDULÁSI IDŐ" : "VÁRHATÓ INDULÁS"}</span>
                 <strong>{budapestDateTime(scheduled.estimatedDepartureAt)}</strong>
-                <small>Budapesti idő (Europe/Budapest)</small>
+                <small>CET</small>
                 {scheduled.delayMinutes != null && scheduled.delayMinutes > 0 && (
                   <b>{fmt(scheduled.delayMinutes)} perc várható késés</b>
                 )}
               </div>
               <div className="schedule-grid">
-                <div><span>MENETREND SZERINT · BUDAPEST</span><strong>{budapestDateTime(scheduled.scheduledDepartureAt)}</strong></div>
-                <div><span>VÁRHATÓ ÉRKEZÉS · BUDAPEST</span><strong>{budapestDateTime(scheduled.estimatedArrivalAt)}</strong></div>
+                <div><span>MENETREND SZERINT · CET</span><strong>{budapestDateTime(scheduled.scheduledDepartureAt)}</strong></div>
+                <div><span>VÁRHATÓ ÉRKEZÉS · CET</span><strong>{budapestDateTime(scheduled.estimatedArrivalAt)}</strong></div>
                 <div><span>TERMINÁL</span><strong>{scheduled.origin.terminal || "—"}</strong></div>
                 <div><span>KAPU</span><strong>{scheduled.origin.gate || "—"}</strong></div>
               </div>
@@ -845,7 +845,7 @@ export default function Home() {
           <div className="journey-panel">
             <div className="journey-times">
               <div>
-                <span>INDULÁS · BUDAPEST <em>becsült</em></span>
+                <span>INDULÁS · CET <em>becsült</em></span>
                 <strong>{clockTime(telemetry.journey?.estimatedDepartureAt, telemetry.journey?.elapsedMinutes ?? null, lastSync, -1)}</strong>
               </div>
               <div>
@@ -853,7 +853,7 @@ export default function Home() {
                 <strong>{duration(telemetry.journey?.elapsedMinutes)}</strong>
               </div>
               <div>
-                <span>ÉRKEZÉS · BUDAPEST <em>becsült</em></span>
+                <span>ÉRKEZÉS · CET <em>becsült</em></span>
                 <strong>{clockTime(telemetry.journey?.estimatedArrivalAt, telemetry.journey?.remainingMinutes ?? null, lastSync, 1)}</strong>
               </div>
               <div>
