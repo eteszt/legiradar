@@ -94,6 +94,12 @@ type ScheduledFlightInfo = {
 
 const scheduleCache = new Map<string, { expiresAt: number; value: ScheduledFlightInfo | null }>();
 
+const communityProviders = [
+  { baseUrl: "https://api.airplanes.live", label: "airplanes.live" },
+  { baseUrl: "https://api.adsb.lol", label: "adsb.lol" },
+  { baseUrl: "https://opendata.adsb.fi/api", label: "ADSB.fi" },
+] as const;
+
 const operators: Record<string, string> = {
   W6: "WZZ",
   W4: "WMT",
@@ -162,6 +168,39 @@ async function fetchProvider(baseUrl: string, selector: "callsign" | "hex" | "re
   const aircraft = payload.ac?.find((item) => number(item.lat) != null && number(item.lon) != null) ?? null;
   if (!aircraft) throw new Error(`${baseUrl}: nincs ilyen repülőgép`);
   return aircraft;
+}
+
+async function fetchOpenSkyByHex(hex: string): Promise<AdsbAircraft> {
+  const normalized = hex.toLowerCase().replace(/[^a-f0-9]/g, "");
+  if (!/^[a-f0-9]{6}$/.test(normalized)) throw new Error("Érvénytelen ICAO24 azonosító.");
+  const response = await fetch(`https://opensky-network.org/api/states/all?icao24=${normalized}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(6500),
+  });
+  if (!response.ok) throw new Error(`OpenSky: HTTP ${response.status}`);
+  const payload = (await response.json()) as { states?: unknown[][] | null };
+  const state = payload.states?.[0];
+  if (!state || number(state[5]) == null || number(state[6]) == null) {
+    throw new Error("OpenSky: nincs friss pozíció.");
+  }
+  const altitudeM = number(state[7]);
+  const speedMs = number(state[9]);
+  const verticalRateMs = number(state[11]);
+  return {
+    hex: normalized,
+    flight: typeof state[1] === "string" ? state[1].trim() : "",
+    lon: state[5],
+    lat: state[6],
+    alt_baro: state[8] === true ? "ground" : altitudeM == null ? null : altitudeM / 0.3048,
+    gs: speedMs == null ? null : speedMs * 1.943844,
+    track: state[10],
+    baro_rate: verticalRateMs == null ? null : verticalRateMs / 0.00508,
+    squawk: state[14],
+    category: state[17],
+    seen: number(state[4]) == null ? null : Math.max(0, Date.now() / 1000 - Number(state[4])),
+    seen_pos: number(state[3]) == null ? null : Math.max(0, Date.now() / 1000 - Number(state[3])),
+  };
 }
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -727,13 +766,12 @@ export async function GET(request: NextRequest) {
   // A böngészőből indított közvetlen airplanes.live kérés időnként CORS-védelembe
   // ütközik. Ezért az élő keresést elsődlegesen a saját szerveroldali végpontunk
   // végzi el, és csak az eredményt küldi vissza a kliensnek.
-  const providers = ["https://api.airplanes.live", "https://api.adsb.lol"];
   try {
     // Minden érvényes hívójel–szolgáltató pár egyszerre indul, így egy lassú
     // végpont nem tartja fel a működő találatot.
     const found = await Promise.any(
-      candidates.flatMap((callsign) => providers.map(async (provider) => ({
-        aircraft: await fetchProvider(provider, "callsign", callsign),
+      candidates.flatMap((callsign) => communityProviders.map(async (provider) => ({
+        aircraft: await fetchProvider(provider.baseUrl, "callsign", callsign),
         callsign,
         provider,
       }))),
@@ -754,9 +792,7 @@ export async function GET(request: NextRequest) {
     const data = shape(
       found.aircraft,
       flight,
-      found.provider.includes("airplanes.live")
-        ? "airplanes.live · szerverkapcsolat"
-        : "adsb.lol · tartalék szerverkapcsolat",
+      `${found.provider.label} · szerverkapcsolat`,
       verifiedRoute || routeLookup.route,
       verifiedSchedule,
     );
@@ -792,26 +828,37 @@ export async function GET(request: NextRequest) {
         schedule.aircraft.icao24 ? { selector: "hex" as const, value: schedule.aircraft.icao24 } : null,
         schedule.aircraft.registration ? { selector: "reg" as const, value: schedule.aircraft.registration } : null,
       ].filter((item): item is { selector: "hex" | "reg"; value: string } => item != null);
-      if (identifiers.length) {
-        const found = await Promise.any(
-          identifiers.flatMap((identifier) => providers.map(async (provider) => ({
-            aircraft: await fetchProvider(provider, identifier.selector, identifier.value),
-            provider,
-          }))),
-        );
-        const data = shape(
-          found.aircraft,
-          flight,
-          `${found.provider.includes("airplanes.live") ? "airplanes.live" : "adsb.lol"} · repülőgép-azonosító alapján`,
-          scheduledRoute,
-          schedule,
-        );
-        if (data) {
-          return NextResponse.json({
-            data,
-            searchedCallsigns: candidates,
-            resolvedAirlineIcao: resolved.resolvedAirlineIcao,
-          });
+      const identityRequests: Promise<{ aircraft: AdsbAircraft; label: string }>[] = identifiers.flatMap(
+        (identifier) => communityProviders.map(async (provider) => ({
+          aircraft: await fetchProvider(provider.baseUrl, identifier.selector, identifier.value),
+          label: provider.label,
+        })),
+      );
+      if (schedule.aircraft.icao24) {
+        identityRequests.push(fetchOpenSkyByHex(schedule.aircraft.icao24).then((aircraft) => ({
+          aircraft,
+          label: "OpenSky",
+        })));
+      }
+      if (identityRequests.length) {
+        try {
+          const found = await Promise.any(identityRequests);
+          const data = shape(
+            found.aircraft,
+            flight,
+            `${found.label} · repülőgép-azonosító alapján`,
+            scheduledRoute,
+            schedule,
+          );
+          if (data) {
+            return NextResponse.json({
+              data,
+              searchedCallsigns: candidates,
+              resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+            });
+          }
+        } catch {
+          // Egyik repülőgép-azonosító alapú tartalékforrás sem adott friss pozíciót.
         }
       }
     }

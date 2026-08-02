@@ -999,7 +999,7 @@ export default function Home() {
           setStatus(isActiveWithoutSignal ? "active-no-signal" : "scheduled");
           setMessage(
             isActiveWithoutSignal
-              ? "A járat aktív, de jelenleg nincs elérhető élő pozíciójel"
+              ? "A járat aktív, de a nyilvános forrásokban jelenleg nincs elérhető pozíció"
               : schedulePayload.scheduled.source,
           );
           setLastSync(new Date());
@@ -1165,7 +1165,7 @@ export default function Home() {
         </form>
         <div className={`live-pill ${status}`}>
           <i />
-          {status === "live" ? "ÉLŐ" : status === "active-no-signal" ? "AKTÍV · NINCS JEL" : status === "scheduled" ? "MENETREND" : status === "loading" ? "KAPCSOLÓDÁS" : status === "error" ? "NINCS JEL" : "KERESÉSRE KÉSZ"}
+          {status === "live" ? "ÉLŐ" : status === "active-no-signal" ? "AKTÍV · POZÍCIÓ NEM ELÉRHETŐ" : status === "scheduled" ? "MENETREND" : status === "loading" ? "KAPCSOLÓDÁS" : status === "error" ? "NINCS ADAT" : "KERESÉSRE KÉSZ"}
         </div>
       </header>
 
@@ -1174,7 +1174,7 @@ export default function Home() {
           {scheduled ? (
             <div className="scheduled-map">
               <div className="scheduled-plane">✈</div>
-              <span>{status === "active-no-signal" ? "AKTÍV, DE NINCS ÉLŐ JEL" : "MÉG NEM SZÁLLT FEL"}</span>
+              <span>{status === "active-no-signal" ? "AKTÍV, DE A POZÍCIÓ NEM ELÉRHETŐ" : "MÉG NEM SZÁLLT FEL"}</span>
               <strong>{scheduled.origin.iata || scheduled.origin.icao || "—"} → {scheduled.destination.iata || scheduled.destination.icao || "—"}</strong>
               <p>{scheduled.origin.airport || "Indulási repülőtér"} → {scheduled.destination.airport || "Célrepülőtér"}</p>
             </div>
@@ -1212,7 +1212,7 @@ export default function Home() {
                   <div className="airline-brand"><b>{brand.monogram}</b><span>{brand.name}</span></div>
                   <button className="share-button" onClick={() => void shareFlight()} type="button">↗ {shareLabel}</button>
                 </div>
-                <div className="eyebrow">{status === "active-no-signal" ? "AKTÍV JÁRAT · ÉLŐ JEL NÉLKÜL" : "KÖVETKEZŐ INDULÁS"}</div>
+                <div className="eyebrow">{status === "active-no-signal" ? "AKTÍV JÁRAT · NYILVÁNOS POZÍCIÓ NÉLKÜL" : "KÖVETKEZŐ INDULÁS"}</div>
                 <h1>{scheduled.flight}</h1>
                 <div className="route-heading">
                   <strong>{scheduled.origin.iata || scheduled.origin.icao || "—"}</strong>
