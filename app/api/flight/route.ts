@@ -93,6 +93,22 @@ type ScheduledFlightInfo = {
 };
 
 const scheduleCache = new Map<string, { expiresAt: number; value: ScheduledFlightInfo | null }>();
+const operationalCallsignCache = new Map<string, { expiresAt: number; callsign: string }>();
+const liveFlightCache = new Map<string, {
+  freshUntil: number;
+  staleUntil: number;
+  value: Record<string, unknown>;
+}>();
+
+function liveResponse(cacheKey: string, value: Record<string, unknown>) {
+  const now = Date.now();
+  liveFlightCache.set(cacheKey, {
+    freshUntil: now + 20_000,
+    staleUntil: now + 2 * 60_000,
+    value,
+  });
+  return NextResponse.json(value);
+}
 
 const communityProviders = [
   { baseUrl: "https://api.airplanes.live", label: "airplanes.live" },
@@ -285,6 +301,99 @@ async function fetchRouteLookup(callsigns: string[]): Promise<RouteLookup> {
   return { route: null, callsignIcao: null, callsignIata: null };
 }
 
+function sameAirport(left: RouteAirport, right: RouteAirport) {
+  return Boolean(
+    (left.icao && right.icao && left.icao === right.icao)
+    || (left.iata && right.iata && left.iata === right.iata),
+  );
+}
+
+function sampledRoutePoints(route: FlightRoute) {
+  const routeKm = haversineKm(
+    route.origin.lat, route.origin.lon,
+    route.destination.lat, route.destination.lon,
+  );
+  // 180 NM sugarú körök, legfeljebb hét mintaponttal. Ez kellően lefedi a
+  // járat útvonalát anélkül, hogy indokolatlanul sok közösségi API-hívást indítana.
+  const radiusNm = 180;
+  const segments = Math.max(1, Math.min(6, Math.ceil(routeKm / (radiusNm * 1.852 * 1.45))));
+  let lonDelta = route.destination.lon - route.origin.lon;
+  while (lonDelta > 180) lonDelta -= 360;
+  while (lonDelta < -180) lonDelta += 360;
+  return Array.from({ length: segments + 1 }, (_, index) => {
+    const progress = index / segments;
+    let lon = route.origin.lon + lonDelta * progress;
+    while (lon > 180) lon -= 360;
+    while (lon < -180) lon += 360;
+    return {
+      lat: route.origin.lat + (route.destination.lat - route.origin.lat) * progress,
+      lon,
+      radiusNm,
+    };
+  });
+}
+
+async function fetchAircraftNearPoint(lat: number, lon: number, radiusNm: number) {
+  const endpoints = [
+    `https://api.airplanes.live/v2/point/${lat.toFixed(4)}/${lon.toFixed(4)}/${radiusNm}`,
+    `https://api.adsb.lol/v2/lat/${lat.toFixed(4)}/lon/${lon.toFixed(4)}/dist/${radiusNm}`,
+  ];
+  return Promise.any(endpoints.map(async (url) => {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(6500),
+    });
+    if (!response.ok) throw new Error(`Földrajzi ADS-B keresés: HTTP ${response.status}`);
+    const payload = (await response.json()) as { ac?: AdsbAircraft[] };
+    return payload.ac || [];
+  }));
+}
+
+async function fetchAircraftByRoute(route: FlightRoute, operatorIcao: string | null) {
+  if (!operatorIcao) return null;
+  const pointResults = await Promise.allSettled(
+    sampledRoutePoints(route).map((point) => fetchAircraftNearPoint(point.lat, point.lon, point.radiusNm)),
+  );
+  const aircraftByHex = new Map<string, AdsbAircraft>();
+  for (const result of pointResults) {
+    if (result.status !== "fulfilled") continue;
+    for (const aircraft of result.value) {
+      const callsign = String(aircraft.flight || "").trim().toUpperCase();
+      const hex = String(aircraft.hex || "").trim().toLowerCase();
+      if (!callsign.startsWith(operatorIcao) || !hex || number(aircraft.lat) == null || number(aircraft.lon) == null) continue;
+      aircraftByHex.set(hex, aircraft);
+    }
+  }
+
+  const routeDistance = haversineKm(
+    route.origin.lat, route.origin.lon,
+    route.destination.lat, route.destination.lon,
+  );
+  const routeCandidates = Array.from(aircraftByHex.values())
+    .map((aircraft) => {
+      const lat = number(aircraft.lat) as number;
+      const lon = number(aircraft.lon) as number;
+      const viaAircraft = haversineKm(route.origin.lat, route.origin.lon, lat, lon)
+        + haversineKm(lat, lon, route.destination.lat, route.destination.lon);
+      return { aircraft, detour: viaAircraft - routeDistance };
+    })
+    .sort((left, right) => left.detour - right.detour)
+    .slice(0, 18);
+  const checked = await Promise.all(routeCandidates.map(async ({ aircraft, detour }) => {
+    const callsign = String(aircraft.flight || "").trim().toUpperCase();
+    const lookup = await fetchRouteLookup([callsign]);
+    const candidateRoute = lookup.route;
+    if (!candidateRoute
+      || !sameAirport(candidateRoute.origin, route.origin)
+      || !sameAirport(candidateRoute.destination, route.destination)) return null;
+    return { aircraft, callsign, route: candidateRoute, detour };
+  }));
+  return checked
+    .filter((item): item is NonNullable<typeof item> => item != null)
+    .sort((left, right) => left.detour - right.detour)[0] || null;
+}
+
 async function resolveAirlineIcao(iata: string): Promise<string | null> {
   // A kézzel karbantartott lista a jelenlegi operatív ICAO-kódokat tartalmazza;
   // ezt részesítjük előnyben az airline-codes csomag esetenként elavult adataival
@@ -304,6 +413,10 @@ async function resolveAirlineIcao(iata: string): Promise<string | null> {
 
 async function resolveFlightNumber(input: string) {
   const normalized = input.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const cachedCallsign = operationalCallsignCache.get(normalized);
+  if (cachedCallsign && cachedCallsign.expiresAt <= Date.now()) {
+    operationalCallsignCache.delete(normalized);
+  }
   const iataMatch = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
   const airlineIcao = iataMatch ? await resolveAirlineIcao(iataMatch[1]) : null;
   const staticCandidates = staticCallsignCandidates(normalized, airlineIcao);
@@ -319,6 +432,7 @@ async function resolveFlightNumber(input: string) {
     ? staticCallsignCandidates(resolvedIata, resolvedOperator)
     : [];
   const candidates = Array.from(new Set([
+    cachedCallsign?.expiresAt && cachedCallsign.expiresAt > Date.now() ? cachedCallsign.callsign : null,
     resolvedIcao,
     ...resolvedCandidates,
     ...staticCandidates,
@@ -768,11 +882,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Adj meg egy érvényes járatszámot." }, { status: 400 });
   }
 
+  const scheduleOnly = request.nextUrl.searchParams.get("schedule") === "1";
+  const cachedLive = liveFlightCache.get(flight);
+  if (!scheduleOnly && cachedLive && cachedLive.freshUntil > Date.now()) {
+    return NextResponse.json(cachedLive.value);
+  }
+
   const resolved = await resolveFlightNumber(flight);
   const candidates = resolved.candidates;
   const scheduleFlight = resolved.flightNumber || flight;
 
-  if (request.nextUrl.searchParams.get("schedule") === "1") {
+  if (scheduleOnly) {
     try {
       const scheduled = await fetchScheduledFlight(scheduleFlight, candidates);
       if (!scheduled) {
@@ -821,7 +941,7 @@ export async function GET(request: NextRequest) {
       verifiedSchedule,
     );
     if (data) {
-      return NextResponse.json({
+      return liveResponse(flight, {
         data,
         searchedCallsigns: candidates,
         resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -831,6 +951,39 @@ export async function GET(request: NextRequest) {
     // Egyik hívójel sem látható jelenleg az ADS-B hálózatokon.
   }
 
+  // Ha az adatbázis csak a menetrendi (számalapú) callsignt ismeri, az azonos
+  // légitársaság útvonal közelében lévő gépei közül indulási és célreptér alapján
+  // keressük meg a tényleges, aznap használt operatív hívójelet.
+  if (resolved.routeLookup.route) {
+    try {
+      const operatorIcao = resolved.resolvedAirlineIcao
+        || resolved.routeLookup.callsignIcao?.match(/^([A-Z]{3})/)?.[1]
+        || null;
+      const routeMatch = await fetchAircraftByRoute(resolved.routeLookup.route, operatorIcao);
+      if (routeMatch) {
+        operationalCallsignCache.set(resolved.flightNumber || flight, {
+          callsign: routeMatch.callsign,
+          expiresAt: Date.now() + 6 * 60 * 60_000,
+        });
+        const data = shape(
+          routeMatch.aircraft,
+          resolved.flightNumber || flight,
+          "Közösségi ADS-B · légitársaság és útvonal alapján feloldva",
+          routeMatch.route,
+        );
+        if (data) {
+          return liveResponse(flight, {
+            data,
+            searchedCallsigns: Array.from(new Set([routeMatch.callsign, ...candidates])),
+            resolvedAirlineIcao: operatorIcao,
+            matchedByRoute: true,
+          });
+        }
+      }
+    } catch {
+      // Sikertelen útvonal-alapú keresés után a repülőgép-azonosító tartalék következik.
+    }
+  }
 
   // Egyes óceáni vagy ritkább lefedettségű járatokat a közösségi ADS-B hálózat
   // nem ad vissza callsign alapján, miközben a menetrendi szolgáltató élő
@@ -842,7 +995,7 @@ export async function GET(request: NextRequest) {
       ? shapeScheduledLive(schedule, schedule.flight || resolved.flightNumber || flight, scheduledRoute)
       : null;
     if (liveData) {
-      return NextResponse.json({
+      return liveResponse(flight, {
         data: liveData,
         searchedCallsigns: candidates,
         resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -877,7 +1030,7 @@ export async function GET(request: NextRequest) {
             schedule,
           );
           if (data) {
-            return NextResponse.json({
+            return liveResponse(flight, {
               data,
               searchedCallsigns: candidates,
               resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -890,6 +1043,20 @@ export async function GET(request: NextRequest) {
     }
   } catch {
     // A szokásos, részletes hibaüzenet következik.
+  }
+
+  if (cachedLive && cachedLive.staleUntil > Date.now()) {
+    const cachedData = cachedLive.value.data;
+    return NextResponse.json({
+      ...cachedLive.value,
+      data: cachedData && typeof cachedData === "object"
+        ? {
+          ...cachedData,
+          source: `${String((cachedData as Record<string, unknown>).source || "Közösségi ADS-B")} · legutóbbi elérhető adat`,
+        }
+        : cachedData,
+      cached: "stale",
+    });
   }
 
   return NextResponse.json(
