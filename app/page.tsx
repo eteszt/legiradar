@@ -111,12 +111,30 @@ type AirlineBrand = {
 };
 
 type RouteWeatherImpact = {
+  id: string;
   index: number;
   feature: TurbulenceFeature;
-  routePercent: number;
-  etaMinutes: number | null;
+  entryPercent: number;
+  exitPercent: number;
+  entryPoint: [number, number];
+  exitPoint: [number, number];
+  entryEtaMinutes: number | null;
+  exitEtaMinutes: number | null;
+  affectedKm: number | null;
+  durationMinutes: number | null;
   altitudeRelevant: boolean;
+  temporalStatus: "overlaps" | "expires-before-entry" | "starts-after-exit" | "unknown";
+  temporallyRelevant: boolean;
 };
+
+type RouteSample = {
+  routePercent: number;
+  progress: number;
+  point: [number, number];
+  crossSection: [number, number][];
+};
+
+const ROUTE_CORRIDOR_HALF_WIDTH_KM = 40;
 
 function weatherFeatureForD3(feature: TurbulenceFeature): TurbulenceFeature {
   // A NOAA szabványos GeoJSON gyűrűirányt használ, a d3-geo gömbi
@@ -271,35 +289,241 @@ function weatherContainsPoint(feature: TurbulenceFeature, point: [number, number
   return false;
 }
 
-function routeWeatherImpacts(
-  features: TurbulenceFeature[],
-  journey: NonNullable<Telemetry["journey"]>,
-  altitudeM: number | null,
-) {
-  const interpolate = geoInterpolate(
-    [journey.origin.lon, journey.origin.lat],
-    [journey.destination.lon, journey.destination.lat],
+function bearingBetween(from: [number, number], to: [number, number]) {
+  const toRad = (value: number) => value * Math.PI / 180;
+  const toDeg = (value: number) => value * 180 / Math.PI;
+  const lon1 = toRad(from[0]);
+  const lat1 = toRad(from[1]);
+  const lon2 = toRad(to[0]);
+  const lat2 = toRad(to[1]);
+  const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function offsetPoint(point: [number, number], distanceKm: number, bearingDeg: number): [number, number] {
+  const radiusKm = 6371;
+  const angularDistance = distanceKm / radiusKm;
+  const bearing = bearingDeg * Math.PI / 180;
+  const lat1 = point[1] * Math.PI / 180;
+  const lon1 = point[0] * Math.PI / 180;
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance)
+      + Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing),
   );
-  const samples = Array.from({ length: 101 }, (_, index) => ({ index, point: interpolate(index / 100) }));
-  const currentProgress = journey.progressPercent ?? 0;
-  const currentFlightLevel = altitudeM == null ? null : altitudeM / 30.48;
-  return features.flatMap((weather, index): RouteWeatherImpact[] => {
-    const hit = samples.find((sample) => sample.index >= currentProgress && weatherContainsPoint(weather, sample.point));
-    if (!hit) return [];
+  const lon2 = lon1 + Math.atan2(
+    Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+    Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
+  );
+  return [((lon2 * 180 / Math.PI + 540) % 360) - 180, lat2 * 180 / Math.PI];
+}
+
+function remainingRouteSamples(telemetry: Telemetry, sampleCount = 201): RouteSample[] {
+  if (!telemetry.journey) return [];
+  const start: [number, number] = [telemetry.lon, telemetry.lat];
+  const destination: [number, number] = [telemetry.journey.destination.lon, telemetry.journey.destination.lat];
+  const interpolate = geoInterpolate(start, destination);
+  const currentProgress = telemetry.journey.progressPercent ?? 0;
+  const points = Array.from({ length: sampleCount }, (_, index) => interpolate(index / (sampleCount - 1)) as [number, number]);
+  return points.map((point, index) => {
+    const previous = points[Math.max(0, index - 1)] || point;
+    const next = points[Math.min(points.length - 1, index + 1)] || point;
+    const bearing = bearingBetween(previous, next);
+    const progress = index / (sampleCount - 1);
+    return {
+      progress,
+      routePercent: currentProgress + progress * (100 - currentProgress),
+      point,
+      crossSection: [-ROUTE_CORRIDOR_HALF_WIDTH_KM, -ROUTE_CORRIDOR_HALF_WIDTH_KM / 2, 0, ROUTE_CORRIDOR_HALF_WIDTH_KM / 2, ROUTE_CORRIDOR_HALF_WIDTH_KM]
+        .map((offset) => offset === 0 ? point : offsetPoint(point, Math.abs(offset), bearing + (offset < 0 ? -90 : 90))),
+    };
+  });
+}
+
+function routeCorridorPolygon(samples: RouteSample[]) {
+  if (samples.length < 2) return [] as [number, number][];
+  const left = samples.map((sample) => sample.crossSection[0]).filter(Boolean) as [number, number][];
+  const right = samples.map((sample) => sample.crossSection.at(-1)).filter(Boolean).reverse() as [number, number][];
+  return [...left, ...right, left[0]].filter(Boolean) as [number, number][];
+}
+
+function temporalRelationship(
+  feature: TurbulenceFeature,
+  referenceTimeMs: number,
+  entryEtaMinutes: number | null,
+  exitEtaMinutes: number | null,
+) {
+  const validFrom = feature.properties.validFrom ? Date.parse(feature.properties.validFrom) : Number.NaN;
+  const validTo = feature.properties.validTo ? Date.parse(feature.properties.validTo) : Number.NaN;
+  if (!Number.isFinite(validFrom) && !Number.isFinite(validTo)) {
+    return { temporalStatus: "unknown" as const, temporallyRelevant: true };
+  }
+  const entryTime = referenceTimeMs + (entryEtaMinutes ?? 0) * 60_000;
+  const exitTime = referenceTimeMs + (exitEtaMinutes ?? entryEtaMinutes ?? 0) * 60_000;
+  if (Number.isFinite(validTo) && validTo < entryTime) {
+    return { temporalStatus: "expires-before-entry" as const, temporallyRelevant: false };
+  }
+  if (Number.isFinite(validFrom) && validFrom > exitTime) {
+    return { temporalStatus: "starts-after-exit" as const, temporallyRelevant: false };
+  }
+  return { temporalStatus: "overlaps" as const, temporallyRelevant: true };
+}
+
+function routeWeatherImpacts(features: TurbulenceFeature[], telemetry: Telemetry) {
+  const journey = telemetry.journey;
+  if (!journey) return [];
+  const samples = remainingRouteSamples(telemetry);
+  const currentFlightLevel = telemetry.altitudeM == null ? null : telemetry.altitudeM / 30.48;
+  const referenceTimeMs = Number.isFinite(Date.parse(telemetry.updatedAt)) ? Date.parse(telemetry.updatedAt) : Date.now();
+
+  return features.flatMap((weather, featureIndex): RouteWeatherImpact[] => {
+    const matchingSamples = samples.map((sample, sampleIndex) => ({ sample, sampleIndex }))
+      .filter(({ sample }) => sample.crossSection.some((point) => weatherContainsPoint(weather, point)));
+    if (matchingSamples.length === 0) return [];
+
+    const runs: Array<typeof matchingSamples> = [];
+    for (const match of matchingSamples) {
+      const currentRun = runs.at(-1);
+      if (!currentRun || match.sampleIndex > (currentRun.at(-1)?.sampleIndex ?? -2) + 1) runs.push([match]);
+      else currentRun.push(match);
+    }
+
     const base = flightLevelNumber(weather.properties.base);
     const top = flightLevelNumber(weather.properties.top);
     const altitudeRelevant = currentFlightLevel == null || (
       (base == null || currentFlightLevel >= base) && (top == null || currentFlightLevel <= top)
     );
-    const remainingFraction = Math.max(0, (hit.index - currentProgress) / Math.max(1, 100 - currentProgress));
-    return [{
-      index,
-      feature: weather,
-      routePercent: hit.index,
-      etaMinutes: journey.remainingMinutes == null ? null : Math.round(journey.remainingMinutes * remainingFraction),
-      altitudeRelevant,
-    }];
-  }).sort((a, b) => Number(b.altitudeRelevant) - Number(a.altitudeRelevant) || a.routePercent - b.routePercent);
+
+    return runs.map((run, runIndex) => {
+      const entry = run[0].sample;
+      const exit = run.at(-1)?.sample || entry;
+      const entryEtaMinutes = journey.remainingMinutes == null ? null : Math.round(journey.remainingMinutes * entry.progress);
+      const exitEtaMinutes = journey.remainingMinutes == null ? null : Math.round(journey.remainingMinutes * exit.progress);
+      const temporal = temporalRelationship(weather, referenceTimeMs, entryEtaMinutes, exitEtaMinutes);
+      return {
+        id: `${featureIndex}-${runIndex}`,
+        index: featureIndex,
+        feature: weather,
+        entryPercent: entry.routePercent,
+        exitPercent: exit.routePercent,
+        entryPoint: entry.point,
+        exitPoint: exit.point,
+        entryEtaMinutes,
+        exitEtaMinutes,
+        affectedKm: journey.remainingKm == null ? null : Math.round(journey.remainingKm * Math.max(0, exit.progress - entry.progress)),
+        durationMinutes: entryEtaMinutes == null || exitEtaMinutes == null ? null : Math.max(1, exitEtaMinutes - entryEtaMinutes),
+        altitudeRelevant,
+        ...temporal,
+      };
+    });
+  }).sort((a, b) =>
+    Number(b.altitudeRelevant && b.temporallyRelevant) - Number(a.altitudeRelevant && a.temporallyRelevant)
+      || a.entryPercent - b.entryPercent,
+  );
+}
+
+function coordinateLabel(point: [number, number]) {
+  const [lon, lat] = point;
+  return `${Math.abs(lat).toFixed(2)}°${lat >= 0 ? "É" : "D"}, ${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "K" : "Ny"}`;
+}
+
+function etaClock(referenceIso: string, etaMinutes: number | null) {
+  if (etaMinutes == null) return "—";
+  const reference = Date.parse(referenceIso);
+  if (!Number.isFinite(reference)) return `kb. ${etaMinutes} perc múlva`;
+  return new Date(reference + etaMinutes * 60_000).toLocaleTimeString("hu-HU", {
+    timeZone: BUDAPEST_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function temporalStatusLabel(impact: RouteWeatherImpact) {
+  if (impact.temporalStatus === "expires-before-entry") return "Lejár az odaérés előtt";
+  if (impact.temporalStatus === "starts-after-exit") return "Csak az áthaladás után lép életbe";
+  if (impact.temporalStatus === "unknown") return "Érvényességi idő nem ismert";
+  return "Érvényes a várható áthaladáskor";
+}
+
+function severityLevel(impact: RouteWeatherImpact) {
+  const severity = impact.feature.properties.severity.toUpperCase();
+  return severity.includes("SEV") ? "severe" : severity.includes("MOD") ? "moderate" : "advisory";
+}
+
+function FlightConditionsPanel({
+  telemetry,
+  impacts,
+  loading,
+  error,
+  updatedAt,
+}: {
+  telemetry: Telemetry;
+  impacts: RouteWeatherImpact[];
+  loading: boolean;
+  error: string | null;
+  updatedAt: string | null;
+}) {
+  const relevant = impacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant);
+  const severe = relevant.some((impact) => severityLevel(impact) === "severe");
+  const state = loading ? "loading" : error ? "unavailable" : severe ? "severe" : relevant.length > 0 ? "attention" : "clear";
+  const title = loading
+    ? "Repülési körülmények elemzése…"
+    : error
+      ? "Az időjárási elemzés nem elérhető"
+      : severe
+        ? "Jelentős veszélyjelzés az útvonal előtt"
+        : relevant.length > 0
+          ? "Figyelmet igénylő útvonalszakasz"
+          : "Kedvező repülési körülmények";
+  const message = error
+    || (relevant.length > 0
+      ? `${relevant.length} időben és magasságban releváns veszélyszakasz található a hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában.`
+      : impacts.length > 0
+        ? `A folyosó ${impacts.length} jelzett területet érint, de azok várhatóan nem aktívak az odaéréskor vagy nem a jelenlegi repülési szintre vonatkoznak.`
+        : `A hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs aktuálisan releváns turbulenciajelzés.`);
+
+  return (
+    <section className={`flight-conditions ${state}`} aria-label="Repülési körülmények összefoglaló">
+      <div className="conditions-heading">
+        <div className="conditions-icon">{state === "clear" ? "✓" : state === "loading" ? "◌" : state === "unavailable" ? "?" : "!"}</div>
+        <div>
+          <span>REPÜLÉSI KÖRÜLMÉNYEK</span>
+          <h2>{title}</h2>
+        </div>
+      </div>
+      <p>{message}</p>
+      <div className="conditions-stats">
+        <div><span>ÚTVONALFOLYOSÓ</span><strong>±{ROUTE_CORRIDOR_HALF_WIDTH_KM} km</strong></div>
+        <div><span>AKTÍV TALÁLAT</span><strong>{loading ? "—" : relevant.length}</strong></div>
+        <div><span>REPÜLÉSI SZINT</span><strong>{telemetry.altitudeM == null ? "—" : `FL${Math.round(telemetry.altitudeM / 30.48)}`}</strong></div>
+      </div>
+      {!loading && impacts.slice(0, 4).map((impact) => {
+        const actuallyRelevant = impact.altitudeRelevant && impact.temporallyRelevant;
+        return (
+          <article className={`hazard-card ${actuallyRelevant ? severityLevel(impact) : "inactive"}`} key={impact.id}>
+            <div className="hazard-card-head">
+              <div>
+                <span>{impact.feature.properties.hazard}</span>
+                <strong>{impact.feature.properties.severity} · {impact.feature.properties.base}–{impact.feature.properties.top}</strong>
+              </div>
+              <b>{actuallyRelevant ? "RELEVÁNS" : !impact.altitudeRelevant ? "MÁS MAGASSÁG" : "NEM AKTÍV"}</b>
+            </div>
+            <div className="hazard-route-grid">
+              <div><span>BELÉPÉS</span><strong>{etaClock(telemetry.updatedAt, impact.entryEtaMinutes)}</strong><small>{coordinateLabel(impact.entryPoint)} · {Math.round(impact.entryPercent)}%</small></div>
+              <div><span>KILÉPÉS</span><strong>{etaClock(telemetry.updatedAt, impact.exitEtaMinutes)}</strong><small>{coordinateLabel(impact.exitPoint)} · {Math.round(impact.exitPercent)}%</small></div>
+            </div>
+            <div className="hazard-facts">
+              <span>Érintett szakasz <b>{impact.affectedKm == null ? "—" : impact.affectedKm < 5 ? "<5 km" : `${impact.affectedKm} km`}</b></span>
+              <span>Becsült időtartam <b>{impact.durationMinutes == null ? "—" : `kb. ${impact.durationMinutes} perc`}</b></span>
+              <span className={impact.temporallyRelevant ? "valid" : "expired"}>{temporalStatusLabel(impact)}</span>
+            </div>
+          </article>
+        );
+      })}
+      {impacts.length > 4 && <small className="more-hazards">További {impacts.length - 4} útvonal-metszés a térképen látható.</small>}
+      <footer>NOAA/NWS SIGMET és G-AIRMET · {updatedAt ? `frissítve ${new Date(updatedAt).toLocaleTimeString("hu-HU", { timeZone: BUDAPEST_TIME_ZONE, hour: "2-digit", minute: "2-digit" })}` : "frissítés folyamatban"} · döntéstámogató becslés</footer>
+    </section>
+  );
 }
 
 function FlightTimeline({ telemetry, scheduled }: { telemetry?: Telemetry | null; scheduled?: ScheduledFlight | null }) {
@@ -401,28 +625,31 @@ function AltitudeChart({ samples, currentAltitude }: { samples: AltitudeSample[]
 function RadarMap({
   telemetry,
   trail,
+  turbulence,
+  weatherImpacts,
+  weatherLoading,
+  weatherError,
+  weatherUpdatedAt,
 }: {
   telemetry: Telemetry;
   trail: [number, number][];
+  turbulence: TurbulenceFeature[];
+  weatherImpacts: RouteWeatherImpact[];
+  weatherLoading: boolean;
+  weatherError: string | null;
+  weatherUpdatedAt: string | null;
 }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [weatherEnabled, setWeatherEnabled] = useState(true);
-  const [weatherLoading, setWeatherLoading] = useState(false);
-  const [weatherError, setWeatherError] = useState<string | null>(null);
-  const [turbulence, setTurbulence] = useState<TurbulenceFeature[]>([]);
-  const [weatherUpdatedAt, setWeatherUpdatedAt] = useState<string | null>(null);
   const displayedTrack =
     telemetry.trackDeg ?? telemetry.trueHeadingDeg ?? telemetry.magneticHeadingDeg ?? 0;
   const dimensions = { width: 1100, height: 740 };
   const journey = telemetry.journey;
-  const weatherImpacts = useMemo(
-    () => journey ? routeWeatherImpacts(turbulence, journey, telemetry.altitudeM) : [],
-    [journey, telemetry.altitudeM, turbulence],
-  );
   const routeImpactIndexes = new Set(weatherImpacts.map((impact) => impact.index));
-  const relevantWeatherImpacts = weatherImpacts.filter((impact) => impact.altitudeRelevant);
+  const activeImpactIndexes = new Set(weatherImpacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant).map((impact) => impact.index));
+  const relevantWeatherImpacts = weatherImpacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant);
   const nextWeatherImpact = relevantWeatherImpacts[0] || weatherImpacts[0];
   const routeCoordinates = journey
     ? [
@@ -455,42 +682,28 @@ function RadarMap({
   const destinationPoint = journey ? projection([journey.destination.lon, journey.destination.lat]) : null;
   const pastPoints = originPoint ? [originPoint, ...points, current] : [...points, current];
   const pastRoute = pastPoints.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ");
-  const futureRoute = destinationPoint ? `M${current[0]},${current[1]} L${destinationPoint[0]},${destinationPoint[1]}` : "";
+  const routeSamples = journey ? remainingRouteSamples(telemetry) : [];
+  const projectedRouteSamples = routeSamples.map((sample) => projection(sample.point)).filter(Boolean) as [number, number][];
+  const futureRoute = projectedRouteSamples.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ");
+  const projectedCorridor = routeCorridorPolygon(routeSamples).map((point) => projection(point)).filter(Boolean) as [number, number][];
+  const corridorPath = projectedCorridor.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" ") + (projectedCorridor.length ? " Z" : "");
+  const impactSegments = weatherImpacts.map((impact) => {
+    const segment = routeSamples
+      .filter((sample) => sample.routePercent >= impact.entryPercent && sample.routePercent <= impact.exitPercent)
+      .map((sample) => projection(sample.point))
+      .filter(Boolean) as [number, number][];
+    return {
+      ...impact,
+      path: segment.map((point, index) => `${index === 0 ? "M" : "L"}${point[0]},${point[1]}`).join(" "),
+      entry: projection(impact.entryPoint),
+      exit: projection(impact.exitPoint),
+    };
+  });
   const mapTransform = `translate(${pan.x} ${pan.y}) translate(${current[0]} ${current[1]}) scale(${zoom}) translate(${-current[0]} ${-current[1]})`;
 
   function changeZoom(factor: number) {
     setZoom((value) => Math.min(10, Math.max(.2, value * factor)));
   }
-
-  const loadWeather = useCallback(async () => {
-    setWeatherLoading(true);
-    setWeatherError(null);
-    try {
-      const response = await fetch("/api/weather", { cache: "no-store" });
-      const payload = (await response.json()) as {
-        features?: TurbulenceFeature[];
-        updatedAt?: string;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(payload.error || "A turbulencia-adatok nem tölthetők be.");
-      setTurbulence(payload.features || []);
-      setWeatherUpdatedAt(payload.updatedAt || new Date().toISOString());
-    } catch (error) {
-      setWeatherError(error instanceof Error ? error.message : "A turbulencia-adatok nem tölthetők be.");
-    } finally {
-      setWeatherLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!weatherEnabled) return;
-    const initialTimer = window.setTimeout(() => void loadWeather(), 0);
-    const timer = window.setInterval(() => void loadWeather(), 10 * 60_000);
-    return () => {
-      window.clearTimeout(initialTimer);
-      window.clearInterval(timer);
-    };
-  }, [loadWeather, weatherEnabled]);
 
   function weatherClass(feature: TurbulenceFeature) {
     if (feature.properties.hazard === "Hegyi hullám") return "mountain-wave";
@@ -544,9 +757,10 @@ function RadarMap({
         <circle cx="550" cy="370" r="430" fill="url(#mapGlow)" />
         <path className="graticule" d={path(geoGraticule10()) ?? ""} />
         <path className="countries" d={path(countries) ?? ""} />
+        {corridorPath && <path className="route-corridor" d={corridorPath}><title>Hátralévő útvonal ±{ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es elemzési folyosója</title></path>}
         {weatherEnabled && turbulence.map((area, index) => (
           <path
-            className={`turbulence-area ${weatherClass(area)} ${routeImpactIndexes.has(index) ? "route-impact" : ""}`}
+            className={`turbulence-area ${weatherClass(area)} ${activeImpactIndexes.has(index) ? "route-impact active-impact" : routeImpactIndexes.has(index) ? "route-impact inactive-impact" : ""}`}
             d={path(weatherFeatureForD3(area) as never) ?? ""}
             key={`${area.properties.source}-${area.properties.area}-${index}`}
           >
@@ -555,6 +769,13 @@ function RadarMap({
         ))}
         {pastRoute && <path className="flight-route" d={pastRoute} filter="url(#routeGlow)" />}
         {futureRoute && <path className="flight-route future" d={futureRoute} />}
+        {weatherEnabled && impactSegments.map((impact) => (
+          <g className={`impact-segment ${impact.altitudeRelevant && impact.temporallyRelevant ? "active" : "inactive"}`} key={impact.id}>
+            {impact.path && <path d={impact.path} />}
+            {impact.entry && <g className="impact-marker entry" transform={`translate(${impact.entry[0]} ${impact.entry[1]})`}><circle r="7" /><text x="-11" y="-11" textAnchor="end">BELÉPÉS</text></g>}
+            {impact.exit && <g className="impact-marker exit" transform={`translate(${impact.exit[0]} ${impact.exit[1]})`}><circle r="7" /><text x="11" y="21">KILÉPÉS</text></g>}
+          </g>
+        ))}
         {journey && originPoint && (
           <g className="airport-point">
             <circle cx={originPoint[0]} cy={originPoint[1]} r="6" />
@@ -614,15 +835,20 @@ function RadarMap({
             <strong>Aktuális veszélyjelzések elemzése…</strong>
           ) : weatherError ? (
             <strong>{weatherError}</strong>
-          ) : nextWeatherImpact?.altitudeRelevant ? (
+          ) : nextWeatherImpact?.altitudeRelevant && nextWeatherImpact.temporallyRelevant ? (
             <>
-              <strong>{relevantWeatherImpacts.length} releváns veszélyzóna az útvonal előtt</strong>
-              <small>{nextWeatherImpact.feature.properties.hazard} · {nextWeatherImpact.feature.properties.severity} · {nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}{nextWeatherImpact.etaMinutes != null ? ` · kb. ${nextWeatherImpact.etaMinutes} perc múlva` : ""}</small>
+              <strong>{relevantWeatherImpacts.length} releváns veszélyszakasz a folyosóban</strong>
+              <small>{nextWeatherImpact.feature.properties.hazard} · {nextWeatherImpact.feature.properties.severity} · {nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}{nextWeatherImpact.entryEtaMinutes != null ? ` · belépés kb. ${nextWeatherImpact.entryEtaMinutes} perc múlva` : ""}{nextWeatherImpact.durationMinutes != null ? ` · ${nextWeatherImpact.durationMinutes} percig` : ""}</small>
+            </>
+          ) : nextWeatherImpact && !nextWeatherImpact.altitudeRelevant ? (
+            <>
+              <strong>A folyosó érint veszélyzónát, de nem a jelenlegi repülési szinten</strong>
+              <small>{nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}</small>
             </>
           ) : nextWeatherImpact ? (
             <>
-              <strong>Az útvonal érint veszélyzónát, de nem a jelenlegi repülési szinten</strong>
-              <small>{nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}</small>
+              <strong>A folyosó metszi a zónát, de az nem érvényes a várható áthaladáskor</strong>
+              <small>{temporalStatusLabel(nextWeatherImpact)}</small>
             </>
           ) : (
             <>
@@ -706,6 +932,10 @@ export default function Home() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [altitudeHistory, setAltitudeHistory] = useState<AltitudeSample[]>([]);
   const [shareLabel, setShareLabel] = useState("Link másolása");
+  const [turbulence, setTurbulence] = useState<TurbulenceFeature[]>([]);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [weatherUpdatedAt, setWeatherUpdatedAt] = useState<string | null>(null);
   const activeQuery = useRef<string | null>(null);
 
   const loadFlight = useCallback(async (flight: string, silent = false) => {
@@ -826,6 +1056,39 @@ export default function Home() {
     window.setTimeout(() => setShareLabel("Link másolása"), 2200);
   }
 
+  const loadWeather = useCallback(async () => {
+    setWeatherLoading(true);
+    setWeatherError(null);
+    try {
+      const response = await fetch("/api/weather", { cache: "no-store" });
+      const payload = (await response.json()) as {
+        features?: TurbulenceFeature[];
+        updatedAt?: string;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error || "A turbulencia-adatok nem tölthetők be.");
+      setTurbulence(payload.features || []);
+      setWeatherUpdatedAt(payload.updatedAt || new Date().toISOString());
+    } catch (error) {
+      setWeatherError(error instanceof Error ? error.message : "A turbulencia-adatok nem tölthetők be.");
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, []);
+
+  const weatherRouteKey = telemetry?.journey
+    ? `${telemetry.flight}-${telemetry.journey.origin.icao}-${telemetry.journey.destination.icao}`
+    : "";
+
+  useEffect(() => {
+    if (!weatherRouteKey) return;
+    const initialTimer = window.setTimeout(() => void loadWeather(), 0);
+    const timer = window.setInterval(() => void loadWeather(), 10 * 60_000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
+  }, [loadWeather, weatherRouteKey]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -865,6 +1128,10 @@ export default function Home() {
       ["Bizonytalansági sugár", fmt(telemetry.containmentRadiusM), "m"],
     ] : [],
     [telemetry],
+  );
+  const weatherImpacts = useMemo(
+    () => telemetry?.journey ? routeWeatherImpacts(turbulence, telemetry) : [],
+    [telemetry, turbulence],
   );
   const brand = airlineBrand(
     telemetry?.journey?.airlineName || scheduled?.airlineName,
@@ -912,7 +1179,15 @@ export default function Home() {
               <p>{scheduled.origin.airport || "Indulási repülőtér"} → {scheduled.destination.airport || "Célrepülőtér"}</p>
             </div>
           ) : telemetry ? (
-            <RadarMap telemetry={telemetry} trail={trail} />
+            <RadarMap
+              telemetry={telemetry}
+              trail={trail}
+              turbulence={turbulence}
+              weatherImpacts={weatherImpacts}
+              weatherLoading={weatherLoading}
+              weatherError={weatherError}
+              weatherUpdatedAt={weatherUpdatedAt}
+            />
           ) : (
             <div className="scheduled-map empty-state">
               <div className="scheduled-plane">⌖</div>
@@ -1030,6 +1305,16 @@ export default function Home() {
           </div>
 
           <FlightTimeline telemetry={telemetry} />
+
+          {telemetry.journey && (
+            <FlightConditionsPanel
+              telemetry={telemetry}
+              impacts={weatherImpacts}
+              loading={weatherLoading}
+              error={weatherError}
+              updatedAt={weatherUpdatedAt}
+            />
+          )}
 
           <div className="section-kicker metric-kicker">PILLANATNYI REPÜLÉSI ADATOK</div>
           <div className="primary-grid">
