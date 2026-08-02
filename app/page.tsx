@@ -638,6 +638,115 @@ function cloudText(clouds: Array<{ cover: string; baseFt: number | null; type: s
   return clouds.map((cloud) => `${cloud.cover}${cloud.baseFt == null ? "" : ` ${cloud.baseFt} ft`}${cloud.type ? ` ${cloud.type}` : ""}`).join(" · ");
 }
 
+type AirportLandingAlert = {
+  severity: "danger" | "warning";
+  label: string;
+  reasons: string[];
+};
+
+function visibilityMiles(value: string | null) {
+  if (!value) return null;
+  const normalized = value.trim().toUpperCase().replace(/SM$/, "");
+  const mixed = normalized.match(/^(\d+)\s+(\d+)\/(\d+)/);
+  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
+  const fraction = normalized.match(/^M?(\d+)\/(\d+)/);
+  if (fraction) return Number(fraction[1]) / Number(fraction[2]);
+  const parsed = Number.parseFloat(normalized.replace("P", ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function airportLandingAlert(weather: AirportWeather | null, targetAt: string | null): AirportLandingAlert | null {
+  if (!weather) return null;
+  const findings: Array<{ severity: "danger" | "warning"; label: string; reason: string }> = [];
+  const add = (severity: "danger" | "warning", label: string, reason: string) => {
+    findings.push({ severity, label, reason });
+  };
+  const weatherCodes = (text: string | null, source: string, probability: number | null = null) => {
+    const tokens = (text || "").toUpperCase().split(/\s+/).filter(Boolean);
+    const probabilityPrefix = probability == null ? "" : `${probability}% eséllyel `;
+    const probabilisticSeverity = probability != null && probability < 40 ? "warning" : "danger";
+    if (tokens.some((token) => /^(?:\+|-)?(?:VC)?TS/.test(token))) {
+      add(probabilisticSeverity, "ZIVATAR", `${source}: ${probabilityPrefix}zivatar`);
+    }
+    if (tokens.some((token) => /^(?:\+|-)?(?:SQ|FC|GR|GS)$/.test(token))) {
+      add(probabilisticSeverity, "VIHAR", `${source}: ${probabilityPrefix}viharos jelenség vagy jégeső`);
+    }
+    if (tokens.some((token) => /^(?:FZ|MI|BC|PR)?FG$/.test(token))) {
+      add("danger", "KÖD", `${source}: köd`);
+    }
+    if (tokens.some((token) => /^(?:\+)?(?:FZRA|FZDZ|RA|SN|SHRA|SHSN)$/.test(token) && (token.startsWith("+") || token.includes("FZ")))) {
+      add("warning", "ERŐS CSAPADÉK", `${source}: erős vagy fagyott csapadék`);
+    }
+  };
+  const wind = (speed: number | null, gust: number | null, source: string) => {
+    if ((gust ?? 0) >= 35 || (speed ?? 0) >= 30) {
+      add("danger", "VIHAROS SZÉL", `${source}: ${gust != null ? `${Math.round(gust)} kt széllökés` : `${Math.round(speed as number)} kt szél`}`);
+    } else if ((gust ?? 0) >= 25 || (speed ?? 0) >= 20) {
+      add("warning", "ERŐS SZÉL", `${source}: ${gust != null ? `${Math.round(gust)} kt széllökés` : `${Math.round(speed as number)} kt szél`}`);
+    }
+  };
+  const visibility = (value: string | null, source: string) => {
+    const miles = visibilityMiles(value);
+    if (miles != null && miles <= 1) add("danger", "ROSSZ LÁTÁS", `${source}: ${value} SM látástávolság`);
+    else if (miles != null && miles <= 3) add("warning", "ROSSZ LÁTÁS", `${source}: ${value} SM látástávolság`);
+  };
+  const ceiling = (clouds: Array<{ cover: string; baseFt: number | null; type: string | null }>, source: string) => {
+    const lowest = clouds
+      .filter((cloud) => ["BKN", "OVC", "VV"].includes(cloud.cover) && cloud.baseFt != null)
+      .reduce<number | null>((min, cloud) => min == null ? cloud.baseFt : Math.min(min, cloud.baseFt as number), null);
+    if (lowest != null && lowest <= 500) add("danger", "ALACSONY FELHŐ", `${source}: ${lowest} ft felhőalap`);
+    else if (lowest != null && lowest <= 1000) add("warning", "ALACSONY FELHŐ", `${source}: ${lowest} ft felhőalap`);
+  };
+
+  const current = weather.current;
+  if (current) {
+    const rawGust = current.raw?.match(/\b(?:VRB|\d{3})\d{2,3}G(\d{2,3})KT\b/i);
+    const gustKt = rawGust ? Number(rawGust[1]) : null;
+    if (current.flightCategory === "LIFR") add("danger", "LIFR", "aktuális METAR: LIFR körülmények");
+    else if (current.flightCategory === "IFR") add("warning", "IFR", "aktuális METAR: IFR körülmények");
+    weatherCodes(current.raw, "aktuális METAR");
+    wind(current.windSpeedKt, gustKt, "aktuális METAR");
+    visibility(current.visibility, "aktuális METAR");
+    ceiling(current.clouds, "aktuális METAR");
+  }
+
+  const targetMs = targetAt ? Date.parse(targetAt) : Number.NaN;
+  const forecast = weather.forecast;
+  if (forecast && Number.isFinite(targetMs)) {
+    for (const period of forecast.periods) {
+      if (!period.from || !period.to || targetMs < Date.parse(period.from) || targetMs > Date.parse(period.to)) continue;
+      weatherCodes(period.weather, "érkezéskori TAF", period.probability);
+      wind(period.windSpeedKt, period.windGustKt, "érkezéskori TAF");
+      visibility(period.visibility, "érkezéskori TAF");
+      ceiling(period.clouds, "érkezéskori TAF");
+    }
+  }
+
+  if (findings.length === 0) return null;
+  const severity = findings.some((finding) => finding.severity === "danger") ? "danger" : "warning";
+  const labelPriority: Record<string, number> = {
+    VIHAR: 100,
+    ZIVATAR: 95,
+    "VIHAROS SZÉL": 90,
+    KÖD: 85,
+    "ROSSZ LÁTÁS": 80,
+    "ERŐS CSAPADÉK": 75,
+    "ALACSONY FELHŐ": 70,
+    LIFR: 60,
+    "ERŐS SZÉL": 55,
+    IFR: 50,
+  };
+  const primary = findings
+    .filter((finding) => finding.severity === severity)
+    .sort((left, right) => (labelPriority[right.label] || 0) - (labelPriority[left.label] || 0))[0]
+    || findings[0];
+  return {
+    severity,
+    label: primary.label,
+    reasons: Array.from(new Set(findings.map((finding) => finding.reason))),
+  };
+}
+
 function AirportWeatherCard({
   role,
   airport,
@@ -769,6 +878,12 @@ function AirportWeatherPopover({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const landingAlert = role === "ÉRKEZÉSI" && !loading && !error
+    ? airportLandingAlert(weather, targetAt)
+    : null;
+  const alertDescription = landingAlert
+    ? `${landingAlert.severity === "danger" ? "Veszélyes" : "Figyelmet igénylő"} reptéri időjárás: ${landingAlert.reasons.join("; ")}`
+    : null;
 
   useEffect(() => {
     if (!open) return;
@@ -788,7 +903,7 @@ function AirportWeatherPopover({
 
   return (
     <div
-      className={`airport-weather-popover ${role === "INDULÁSI" ? "origin" : "destination"}`}
+      className={`airport-weather-popover ${role === "INDULÁSI" ? "origin" : "destination"}${landingAlert ? ` has-alert ${landingAlert.severity}` : ""}`}
       ref={rootRef}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
@@ -802,11 +917,17 @@ function AirportWeatherPopover({
         className="airport-code-trigger"
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={`${airport.iata || airport.icao} ${role.toLowerCase()} repülőtér időjárása`}
+        aria-label={`${airport.iata || airport.icao} ${role.toLowerCase()} repülőtér időjárása${alertDescription ? `. ${alertDescription}` : ""}`}
+        title={alertDescription || undefined}
         onClick={() => setOpen(true)}
       >
-        {airport.iata || airport.icao || "—"}
-        <small aria-hidden="true">IDŐJÁRÁS</small>
+        <span className="airport-code-line">
+          {airport.iata || airport.icao || "—"}
+          {landingAlert && <span className="airport-alert-icon" aria-hidden="true">⚠</span>}
+        </span>
+        <small className={landingAlert ? "airport-alert-label" : undefined} aria-hidden="true">
+          {landingAlert?.label || "IDŐJÁRÁS"}
+        </small>
       </button>
       {open && (
         <div className="airport-weather-floating" role="dialog" aria-label={`${airport.iata || airport.icao} repülőtéri időjárás`}>

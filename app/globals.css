@@ -679,6 +679,19 @@ button:focus-visible, input:focus-visible {
   transition: color .16s, border-color .16s, text-shadow .16s;
 }
 .airport-code-trigger small { color: #7391a1; font: 800 .39rem/1.2 ui-monospace, monospace; letter-spacing: .14em; }
+.airport-code-line { display: inline-flex; align-items: center; gap: .16em; }
+.airport-alert-icon { display: inline-block; color: #ffbd4a; font-size: .56em; line-height: 1; filter: drop-shadow(0 0 5px rgba(255, 184, 77, .78)); animation: airportAlertPulse 1.45s ease-in-out infinite; }
+.airport-weather-popover.has-alert .airport-code-trigger { border-bottom-style: solid; }
+.airport-weather-popover.has-alert.warning .airport-code-trigger { border-color: rgba(255, 184, 77, .95); text-shadow: 0 0 15px rgba(255, 184, 77, .24); }
+.airport-weather-popover.has-alert.warning .airport-alert-label { border-color: rgba(255, 184, 77, .58); background: rgba(255, 184, 77, .15); color: #ffd078; box-shadow: 0 0 10px rgba(255, 184, 77, .16); }
+.airport-weather-popover.has-alert.danger .airport-code-trigger { border-color: rgba(255, 86, 99, .98); text-shadow: 0 0 17px rgba(255, 72, 88, .36); }
+.airport-weather-popover.has-alert.danger .airport-alert-icon { color: #ff5967; filter: drop-shadow(0 0 6px rgba(255, 72, 88, .9)); }
+.airport-weather-popover.has-alert.danger .airport-alert-label { border-color: rgba(255, 86, 99, .68); background: rgba(255, 72, 88, .17); color: #ff9099; box-shadow: 0 0 11px rgba(255, 72, 88, .2); }
+.airport-alert-label { max-width: 96px; padding: 2px 4px; overflow: hidden; border: 1px solid transparent; border-radius: 3px; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes airportAlertPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .58; transform: scale(1.2); }
+}
 .airport-code-trigger:hover, .airport-code-trigger:focus-visible { outline: none; color: var(--cyan); border-color: var(--cyan); text-shadow: 0 0 14px rgba(53, 214, 233, .42); }
 .airport-code-trigger:focus-visible { box-shadow: 0 3px 0 -1px var(--cyan); }
 .airport-weather-floating {
