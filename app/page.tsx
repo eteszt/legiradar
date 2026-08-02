@@ -752,40 +752,77 @@ function AirportWeatherCard({
   );
 }
 
-function AirportWeatherCards({
-  journey,
+function AirportWeatherPopover({
+  role,
+  airport,
   weather,
+  targetAt,
   loading,
   error,
 }: {
-  journey: NonNullable<Telemetry["journey"]>;
-  weather: AirportWeather[];
+  role: "INDULÁSI" | "ÉRKEZÉSI";
+  airport: RouteAirport;
+  weather: AirportWeather | null;
+  targetAt: string | null;
   loading: boolean;
   error: string | null;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
   return (
-    <section className="airport-weather-block" aria-label="Indulási és érkezési repülőtér időjárása">
-      <div className="section-kicker">REPÜLŐTÉRI IDŐJÁRÁS</div>
-      <div className="airport-weather-grid">
-        <AirportWeatherCard
-          role="INDULÁSI"
-          airport={journey.origin}
-          weather={weather.find((item) => item.icao === journey.origin.icao) || null}
-          targetAt={journey.estimatedDepartureAt}
-          loading={loading}
-          error={error}
-        />
-        <AirportWeatherCard
-          role="ÉRKEZÉSI"
-          airport={journey.destination}
-          weather={weather.find((item) => item.icao === journey.destination.icao) || null}
-          targetAt={journey.estimatedArrivalAt}
-          loading={loading}
-          error={error}
-        />
-      </div>
-      <footer>NOAA/NWS Aviation Weather Center · METAR aktuális mérés, TAF repülőtéri előrejelzés · tájékoztató adat</footer>
-    </section>
+    <div
+      className={`airport-weather-popover ${role === "INDULÁSI" ? "origin" : "destination"}`}
+      ref={rootRef}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        className="airport-code-trigger"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={`${airport.iata || airport.icao} ${role.toLowerCase()} repülőtér időjárása`}
+        onClick={() => setOpen(true)}
+      >
+        {airport.iata || airport.icao || "—"}
+        <small aria-hidden="true">IDŐJÁRÁS</small>
+      </button>
+      {open && (
+        <div className="airport-weather-floating" role="dialog" aria-label={`${airport.iata || airport.icao} repülőtéri időjárás`}>
+          <button className="airport-weather-close" type="button" aria-label="Időjárási ablak bezárása" onClick={() => setOpen(false)}>×</button>
+          <AirportWeatherCard
+            role={role}
+            airport={airport}
+            weather={weather}
+            targetAt={targetAt}
+            loading={loading}
+            error={error}
+          />
+          <small className="airport-weather-source">NOAA/NWS Aviation Weather Center · METAR és TAF · tájékoztató adat</small>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1578,9 +1615,29 @@ export default function Home() {
                 <div className="eyebrow">{status === "active-no-signal" ? "AKTÍV JÁRAT · NYILVÁNOS POZÍCIÓ NÉLKÜL" : "KÖVETKEZŐ INDULÁS"}</div>
                 <h1>{scheduled.flight}</h1>
                 <div className="route-heading">
-                  <strong>{scheduled.origin.iata || scheduled.origin.icao || "—"}</strong>
+                  {weatherFlight ? (
+                    <AirportWeatherPopover
+                      key={`scheduled-origin-${weatherFlight.journey.origin.icao}`}
+                      role="INDULÁSI"
+                      airport={weatherFlight.journey.origin}
+                      weather={airportWeather.find((item) => item.icao === weatherFlight.journey.origin.icao) || null}
+                      targetAt={weatherFlight.journey.estimatedDepartureAt}
+                      loading={airportWeatherLoading}
+                      error={airportWeatherError}
+                    />
+                  ) : <strong>{scheduled.origin.iata || scheduled.origin.icao || "—"}</strong>}
                   <span>→</span>
-                  <strong>{scheduled.destination.iata || scheduled.destination.icao || "—"}</strong>
+                  {weatherFlight ? (
+                    <AirportWeatherPopover
+                      key={`scheduled-destination-${weatherFlight.journey.destination.icao}`}
+                      role="ÉRKEZÉSI"
+                      airport={weatherFlight.journey.destination}
+                      weather={airportWeather.find((item) => item.icao === weatherFlight.journey.destination.icao) || null}
+                      targetAt={weatherFlight.journey.estimatedArrivalAt}
+                      loading={airportWeatherLoading}
+                      error={airportWeatherError}
+                    />
+                  ) : <strong>{scheduled.destination.iata || scheduled.destination.icao || "—"}</strong>}
                 </div>
                 <div className="route-cities">{scheduled.origin.airport || "—"} → {scheduled.destination.airport || "—"}</div>
                 <div className="callsign">{scheduled.airlineName || "Légitársaság nem ismert"} · {scheduled.callsign}</div>
@@ -1602,21 +1659,13 @@ export default function Home() {
               </div>
               <FlightTimeline scheduled={scheduled} />
               {weatherFlight?.preflight && (
-                <>
-                  <FlightConditionsPanel
-                    telemetry={weatherFlight}
-                    impacts={weatherImpacts}
-                    loading={weatherLoading}
-                    error={weatherError}
-                    updatedAt={weatherUpdatedAt}
-                  />
-                  <AirportWeatherCards
-                    journey={weatherFlight.journey}
-                    weather={airportWeather}
-                    loading={airportWeatherLoading}
-                    error={airportWeatherError}
-                  />
-                </>
+                <FlightConditionsPanel
+                  telemetry={weatherFlight}
+                  impacts={weatherImpacts}
+                  loading={weatherLoading}
+                  error={weatherError}
+                  updatedAt={weatherUpdatedAt}
+                />
               )}
               <p className="schedule-note">
                 {status === "active-no-signal"
@@ -1634,9 +1683,29 @@ export default function Home() {
             <div className="eyebrow">AKTUÁLIS JÁRAT</div>
             <h1>{telemetry.flight}</h1>
             <div className="route-heading">
-              <strong>{telemetry.journey?.origin.iata || telemetry.journey?.origin.icao || "—"}</strong>
+              {weatherFlight ? (
+                <AirportWeatherPopover
+                  key={`live-origin-${weatherFlight.journey.origin.icao}`}
+                  role="INDULÁSI"
+                  airport={weatherFlight.journey.origin}
+                  weather={airportWeather.find((item) => item.icao === weatherFlight.journey.origin.icao) || null}
+                  targetAt={weatherFlight.journey.estimatedDepartureAt}
+                  loading={airportWeatherLoading}
+                  error={airportWeatherError}
+                />
+              ) : <strong>{telemetry.journey?.origin.iata || telemetry.journey?.origin.icao || "—"}</strong>}
               <span>→</span>
-              <strong>{telemetry.journey?.destination.iata || telemetry.journey?.destination.icao || "—"}</strong>
+              {weatherFlight ? (
+                <AirportWeatherPopover
+                  key={`live-destination-${weatherFlight.journey.destination.icao}`}
+                  role="ÉRKEZÉSI"
+                  airport={weatherFlight.journey.destination}
+                  weather={airportWeather.find((item) => item.icao === weatherFlight.journey.destination.icao) || null}
+                  targetAt={weatherFlight.journey.estimatedArrivalAt}
+                  loading={airportWeatherLoading}
+                  error={airportWeatherError}
+                />
+              ) : <strong>{telemetry.journey?.destination.iata || telemetry.journey?.destination.icao || "—"}</strong>}
             </div>
             <div className="route-cities">
               {telemetry.journey
@@ -1687,21 +1756,13 @@ export default function Home() {
           <FlightTimeline telemetry={telemetry} />
 
           {weatherFlight && !weatherFlight.preflight && (
-            <>
-              <FlightConditionsPanel
-                telemetry={weatherFlight}
-                impacts={weatherImpacts}
-                loading={weatherLoading}
-                error={weatherError}
-                updatedAt={weatherUpdatedAt}
-              />
-              <AirportWeatherCards
-                journey={weatherFlight.journey}
-                weather={airportWeather}
-                loading={airportWeatherLoading}
-                error={airportWeatherError}
-              />
-            </>
+            <FlightConditionsPanel
+              telemetry={weatherFlight}
+              impacts={weatherImpacts}
+              loading={weatherLoading}
+              error={weatherError}
+              updatedAt={weatherUpdatedAt}
+            />
           )}
 
           <div className="section-kicker metric-kicker">PILLANATNYI REPÜLÉSI ADATOK</div>
