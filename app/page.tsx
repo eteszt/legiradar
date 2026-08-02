@@ -101,6 +101,51 @@ type WeatherFlight = {
   preflight?: boolean;
 };
 
+type AirportWeather = {
+  icao: string;
+  name: string | null;
+  current: {
+    observedAt: string | null;
+    temperatureC: number | null;
+    dewpointC: number | null;
+    windDirectionDeg: number | null;
+    windVariable: boolean;
+    windSpeedKt: number | null;
+    visibility: string | null;
+    pressureHpa: number | null;
+    cloudSummary: string | null;
+    clouds: Array<{ cover: string; baseFt: number | null; type: string | null }>;
+    flightCategory: string | null;
+    raw: string | null;
+  } | null;
+  forecast: {
+    issuedAt: string | null;
+    validFrom: string | null;
+    validTo: string | null;
+    raw: string | null;
+    periods: Array<{
+      from: string | null;
+      to: string | null;
+      becomingAt: string | null;
+      change: string | null;
+      probability: number | null;
+      windDirectionDeg: number | null;
+      windVariable: boolean;
+      windSpeedKt: number | null;
+      windGustKt: number | null;
+      visibility: string | null;
+      weather: string | null;
+      clouds: Array<{ cover: string; baseFt: number | null; type: string | null }>;
+    }>;
+  } | null;
+};
+
+type AirportWeatherPayload = {
+  airports: AirportWeather[];
+  source: string;
+  updatedAt: string;
+};
+
 type TurbulenceFeature = {
   type: "Feature";
   properties: {
@@ -564,6 +609,176 @@ function FlightConditionsPanel({
   );
 }
 
+function flightCategoryLabel(category: string | null) {
+  if (category === "VFR") return "VFR · jó látási körülmények";
+  if (category === "MVFR") return "MVFR · korlátozott látási körülmények";
+  if (category === "IFR") return "IFR · műszeres körülmények";
+  if (category === "LIFR") return "LIFR · nagyon korlátozott körülmények";
+  return category || "Nincs kategóriaadat";
+}
+
+function airportWind(direction: number | null, variable: boolean, speed: number | null, gust: number | null = null) {
+  if (speed == null) return "—";
+  const heading = variable ? "változó" : direction == null ? "—" : `${Math.round(direction)}°`;
+  return `${heading} · ${Math.round(speed)} kt${gust == null ? "" : `, lökés ${Math.round(gust)} kt`} · ${Math.round(speed * 1.852)} km/h`;
+}
+
+function cloudText(clouds: Array<{ cover: string; baseFt: number | null; type: string | null }>, fallback = "—") {
+  if (clouds.length === 0) return fallback;
+  return clouds.map((cloud) => `${cloud.cover}${cloud.baseFt == null ? "" : ` ${cloud.baseFt} ft`}${cloud.type ? ` ${cloud.type}` : ""}`).join(" · ");
+}
+
+function AirportWeatherCard({
+  role,
+  airport,
+  weather,
+  targetAt,
+  loading,
+  error,
+}: {
+  role: "INDULÁSI" | "ÉRKEZÉSI";
+  airport: RouteAirport;
+  weather: AirportWeather | null;
+  targetAt: string | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const targetMs = targetAt ? Date.parse(targetAt) : Number.NaN;
+  const forecast = weather?.forecast || null;
+  const forecastCoversTarget = Boolean(
+    forecast
+      && Number.isFinite(targetMs)
+      && forecast.validFrom
+      && forecast.validTo
+      && targetMs >= Date.parse(forecast.validFrom)
+      && targetMs <= Date.parse(forecast.validTo),
+  );
+  const matchingPeriods = forecastCoversTarget
+    ? forecast?.periods.filter((period) => {
+      if (!period.from || !period.to) return false;
+      return targetMs >= Date.parse(period.from) && targetMs <= Date.parse(period.to);
+    }) || []
+    : [];
+  const targetPeriod = matchingPeriods.find((period) =>
+    period.probability != null
+      || period.windGustKt != null
+      || (period.weather != null && period.weather !== "NSW")
+      || period.change === "TEMPO",
+  ) || matchingPeriods[0] || null;
+  const current = weather?.current || null;
+  const categoryClass = current?.flightCategory?.toLowerCase() || "unknown";
+
+  return (
+    <article className="airport-weather-card">
+      <header>
+        <div>
+          <span>{role} REPTÉR</span>
+          <h3>{airport.iata} <small>{airport.icao}</small></h3>
+          <p>{airport.city} · {weather?.name || airport.name}</p>
+        </div>
+        {current && <b className={`flight-category ${categoryClass}`}>{current.flightCategory || "N/A"}</b>}
+      </header>
+      {loading ? (
+        <p className="airport-weather-state">METAR és TAF adatok betöltése…</p>
+      ) : error ? (
+        <p className="airport-weather-state error">{error}</p>
+      ) : !weather ? (
+        <p className="airport-weather-state">Ehhez a repülőtérhez nem érkezett időjárási adat.</p>
+      ) : (
+        <>
+          <section className="airport-current-weather">
+            <div className="airport-weather-section-title">
+              <span>AKTUÁLIS METAR</span>
+              <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} CET` : "nincs aktuális mérés"}</small>
+            </div>
+            {current ? (
+              <>
+                <strong className="airport-condition-summary">{flightCategoryLabel(current.flightCategory)}</strong>
+                <div className="airport-weather-metrics">
+                  <div><span>HŐMÉRSÉKLET</span><strong>{current.temperatureC == null ? "—" : `${current.temperatureC} °C`}</strong><small>harmatpont {current.dewpointC == null ? "—" : `${current.dewpointC} °C`}</small></div>
+                  <div><span>SZÉL</span><strong>{airportWind(current.windDirectionDeg, current.windVariable, current.windSpeedKt)}</strong></div>
+                  <div><span>LÁTÁSTÁVOLSÁG</span><strong>{current.visibility ? `${current.visibility} SM` : "—"}</strong></div>
+                  <div><span>QNH</span><strong>{current.pressureHpa == null ? "—" : `${Math.round(current.pressureHpa)} hPa`}</strong></div>
+                </div>
+                <p className="airport-clouds"><span>FELHŐZET</span>{cloudText(current.clouds, current.cloudSummary || "—")}</p>
+              </>
+            ) : <p className="airport-weather-state">Aktuális METAR nem érhető el.</p>}
+          </section>
+          <section className="airport-forecast-weather">
+            <div className="airport-weather-section-title">
+              <span>TAF · {role === "INDULÁSI" ? "INDULÁSKOR" : "ÉRKEZÉSKOR"}</span>
+              <small>{targetAt ? `${budapestDateTime(targetAt)} CET` : "időpont nélkül"}</small>
+            </div>
+            {!forecast ? (
+              <p className="airport-weather-state">TAF előrejelzés nem érhető el.</p>
+            ) : !forecastCoversTarget ? (
+              <p className="airport-weather-state future">A jelenlegi TAF még nem fedi le ezt az időpontot. Az indulás közeledtével automatikusan frissül.</p>
+            ) : targetPeriod ? (
+              <>
+                <strong className="airport-condition-summary">
+                  {targetPeriod.probability ? `${targetPeriod.probability}% ` : ""}
+                  {targetPeriod.weather || targetPeriod.change || "Várható reptéri körülmények"}
+                </strong>
+                <div className="airport-weather-metrics forecast">
+                  <div><span>SZÉL</span><strong>{airportWind(targetPeriod.windDirectionDeg, targetPeriod.windVariable, targetPeriod.windSpeedKt, targetPeriod.windGustKt)}</strong></div>
+                  <div><span>LÁTÁSTÁVOLSÁG</span><strong>{targetPeriod.visibility ? `${targetPeriod.visibility} SM` : "—"}</strong></div>
+                </div>
+                <p className="airport-clouds"><span>FELHŐZET</span>{cloudText(targetPeriod.clouds)}</p>
+              </>
+            ) : (
+              <p className="airport-weather-state">A TAF érvényes, de az adott időponthoz nincs külön előrejelzési szakasz.</p>
+            )}
+          </section>
+          {(current?.raw || forecast?.raw) && (
+            <details className="raw-aviation-weather">
+              <summary>Eredeti METAR / TAF</summary>
+              {current?.raw && <code>{current.raw}</code>}
+              {forecast?.raw && <code>{forecast.raw}</code>}
+            </details>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
+function AirportWeatherCards({
+  journey,
+  weather,
+  loading,
+  error,
+}: {
+  journey: NonNullable<Telemetry["journey"]>;
+  weather: AirportWeather[];
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <section className="airport-weather-block" aria-label="Indulási és érkezési repülőtér időjárása">
+      <div className="section-kicker">REPÜLŐTÉRI IDŐJÁRÁS</div>
+      <div className="airport-weather-grid">
+        <AirportWeatherCard
+          role="INDULÁSI"
+          airport={journey.origin}
+          weather={weather.find((item) => item.icao === journey.origin.icao) || null}
+          targetAt={journey.estimatedDepartureAt}
+          loading={loading}
+          error={error}
+        />
+        <AirportWeatherCard
+          role="ÉRKEZÉSI"
+          airport={journey.destination}
+          weather={weather.find((item) => item.icao === journey.destination.icao) || null}
+          targetAt={journey.estimatedArrivalAt}
+          loading={loading}
+          error={error}
+        />
+      </div>
+      <footer>NOAA/NWS Aviation Weather Center · METAR aktuális mérés, TAF repülőtéri előrejelzés · tájékoztató adat</footer>
+    </section>
+  );
+}
+
 function FlightTimeline({ telemetry, scheduled }: { telemetry?: Telemetry | null; scheduled?: ScheduledFlight | null }) {
   const phaseIndex = scheduled
     ? 0
@@ -974,6 +1189,9 @@ export default function Home() {
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState<string | null>(null);
   const [weatherUpdatedAt, setWeatherUpdatedAt] = useState<string | null>(null);
+  const [airportWeather, setAirportWeather] = useState<AirportWeather[]>([]);
+  const [airportWeatherLoading, setAirportWeatherLoading] = useState(false);
+  const [airportWeatherError, setAirportWeatherError] = useState<string | null>(null);
   const activeQuery = useRef<string | null>(null);
 
   const loadFlight = useCallback(async (flight: string, silent = false) => {
@@ -982,6 +1200,8 @@ export default function Home() {
     if (!silent) {
       setTelemetry(null);
       setScheduled(null);
+      setAirportWeather([]);
+      setAirportWeatherError(null);
       setStatus("loading");
       setMessage("Élő ADS-B adatok keresése…");
     }
@@ -1161,6 +1381,9 @@ export default function Home() {
   const weatherRouteKey = weatherFlight
     ? `${scheduled?.flight || telemetry?.flight}-${weatherFlight.journey.origin.icao}-${weatherFlight.journey.destination.icao}-${weatherFlight.preflight ? "preflight" : "live"}`
     : "";
+  const airportWeatherKey = weatherFlight
+    ? `${weatherFlight.journey.origin.icao},${weatherFlight.journey.destination.icao}`
+    : "";
 
   useEffect(() => {
     if (!weatherRouteKey) return;
@@ -1171,6 +1394,37 @@ export default function Home() {
       window.clearInterval(timer);
     };
   }, [loadWeather, weatherRouteKey]);
+
+  useEffect(() => {
+    if (!airportWeatherKey) return;
+    const controller = new AbortController();
+    const refresh = async () => {
+      setAirportWeatherLoading(true);
+      setAirportWeatherError(null);
+      try {
+        const response = await fetch(`/api/weather/airports?ids=${encodeURIComponent(airportWeatherKey)}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = (await response.json()) as AirportWeatherPayload & { error?: string };
+        if (!response.ok) throw new Error(payload.error || "A repülőtéri időjárás nem elérhető.");
+        setAirportWeather(payload.airports || []);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setAirportWeatherError(error instanceof Error ? error.message : "A repülőtéri időjárás nem elérhető.");
+        }
+      } finally {
+        if (!controller.signal.aborted) setAirportWeatherLoading(false);
+      }
+    };
+    const initialTimer = window.setTimeout(() => void refresh(), 0);
+    const timer = window.setInterval(() => void refresh(), 10 * 60_000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
+  }, [airportWeatherKey]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1321,13 +1575,21 @@ export default function Home() {
               </div>
               <FlightTimeline scheduled={scheduled} />
               {weatherFlight?.preflight && (
-                <FlightConditionsPanel
-                  telemetry={weatherFlight}
-                  impacts={weatherImpacts}
-                  loading={weatherLoading}
-                  error={weatherError}
-                  updatedAt={weatherUpdatedAt}
-                />
+                <>
+                  <FlightConditionsPanel
+                    telemetry={weatherFlight}
+                    impacts={weatherImpacts}
+                    loading={weatherLoading}
+                    error={weatherError}
+                    updatedAt={weatherUpdatedAt}
+                  />
+                  <AirportWeatherCards
+                    journey={weatherFlight.journey}
+                    weather={airportWeather}
+                    loading={airportWeatherLoading}
+                    error={airportWeatherError}
+                  />
+                </>
               )}
               <p className="schedule-note">
                 {status === "active-no-signal"
@@ -1398,13 +1660,21 @@ export default function Home() {
           <FlightTimeline telemetry={telemetry} />
 
           {weatherFlight && !weatherFlight.preflight && (
-            <FlightConditionsPanel
-              telemetry={weatherFlight}
-              impacts={weatherImpacts}
-              loading={weatherLoading}
-              error={weatherError}
-              updatedAt={weatherUpdatedAt}
-            />
+            <>
+              <FlightConditionsPanel
+                telemetry={weatherFlight}
+                impacts={weatherImpacts}
+                loading={weatherLoading}
+                error={weatherError}
+                updatedAt={weatherUpdatedAt}
+              />
+              <AirportWeatherCards
+                journey={weatherFlight.journey}
+                weather={airportWeather}
+                loading={airportWeatherLoading}
+                error={airportWeatherError}
+              />
+            </>
           )}
 
           <div className="section-kicker metric-kicker">PILLANATNYI REPÜLÉSI ADATOK</div>
