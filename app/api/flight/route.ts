@@ -1,0 +1,765 @@
+import { NextRequest, NextResponse } from "next/server";
+import airlines from "airline-codes/airlines.json";
+import airports from "@nwpr/airport-codes";
+
+export const dynamic = "force-dynamic";
+
+type AdsbAircraft = Record<string, unknown>;
+type RouteAirport = {
+  iata: string;
+  icao: string;
+  name: string;
+  city: string;
+  country: string;
+  lat: number;
+  lon: number;
+};
+type FlightRoute = {
+  origin: RouteAirport;
+  destination: RouteAirport;
+  airlineName: string | null;
+};
+type RouteLookup = {
+  route: FlightRoute | null;
+  callsignIcao: string | null;
+  callsignIata: string | null;
+};
+
+type AviationstackFlight = {
+  flight_date?: string;
+  flight_status?: string;
+  departure?: {
+    airport?: string; timezone?: string; iata?: string; icao?: string;
+    terminal?: string | null; gate?: string | null; delay?: number | null;
+    scheduled?: string | null; estimated?: string | null; actual?: string | null;
+  };
+  arrival?: {
+    airport?: string; timezone?: string; iata?: string; icao?: string;
+    terminal?: string | null; gate?: string | null;
+    scheduled?: string | null; estimated?: string | null; actual?: string | null;
+  };
+  airline?: { name?: string };
+  flight?: { iata?: string; icao?: string };
+  aircraft?: {
+    registration?: string | null;
+    iata?: string | null;
+    icao?: string | null;
+    icao24?: string | null;
+  } | null;
+  live?: {
+    updated?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    altitude?: number | null;
+    direction?: number | null;
+    speed_horizontal?: number | null;
+    speed_vertical?: number | null;
+    is_ground?: boolean | null;
+  } | null;
+};
+
+type ScheduledFlightInfo = {
+  flight: string;
+  callsign: string;
+  status: string;
+  airlineName: string | null;
+  origin: { airport: string | null; iata: string | null; icao: string | null; timezone: string | null; terminal: string | null; gate: string | null };
+  destination: { airport: string | null; iata: string | null; icao: string | null; timezone: string | null; terminal: string | null; gate: string | null };
+  scheduledDepartureAt: string | null;
+  estimatedDepartureAt: string | null;
+  actualDepartureAt: string | null;
+  scheduledArrivalAt: string | null;
+  estimatedArrivalAt: string | null;
+  actualArrivalAt: string | null;
+  delayMinutes: number | null;
+  aircraft: {
+    registration: string | null;
+    typeIata: string | null;
+    typeIcao: string | null;
+    icao24: string | null;
+  };
+  live: {
+    updatedAt: string | null;
+    lat: number;
+    lon: number;
+    altitudeM: number | null;
+    directionDeg: number | null;
+    speedKmh: number | null;
+    verticalRateMs: number | null;
+    onGround: boolean;
+  } | null;
+  source: string;
+};
+
+const scheduleCache = new Map<string, { expiresAt: number; value: ScheduledFlightInfo | null }>();
+
+const operators: Record<string, string> = {
+  W6: "WZZ",
+  W4: "WMT",
+  FR: "RYR",
+  LH: "DLH",
+  BA: "BAW",
+  KL: "KLM",
+  AF: "AFR",
+  U2: "EZY",
+  LX: "SWR",
+  OS: "AUA",
+  EW: "EWG",
+  QR: "QTR",
+  EK: "UAE",
+  TK: "THY",
+  IB: "IBE",
+  AY: "FIN",
+  LO: "LOT",
+  SK: "SAS",
+  DY: "NOZ",
+};
+
+function number(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function convert(value: unknown, factor: number, digits = 0) {
+  const parsed = number(value);
+  return parsed == null ? null : Number((parsed * factor).toFixed(digits));
+}
+
+function staticCallsignCandidates(flight: string, dynamicIcao?: string | null) {
+  const normalized = flight.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const match = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
+  if (!match) return [normalized];
+  const [, iata, suffix] = match;
+  const unpadded = suffix.replace(/^0+/, "") || "0";
+  const icao = dynamicIcao || operators[iata];
+  const numericSuffix = /^\d+$/.test(unpadded) ? unpadded : null;
+  return Array.from(
+    new Set(
+      [
+        icao ? `${icao}${suffix}` : "",
+        icao ? `${icao}${unpadded}` : "",
+        icao && numericSuffix ? `${icao}${numericSuffix.padStart(3, "0")}` : "",
+        icao && numericSuffix ? `${icao}${numericSuffix.padStart(4, "0")}` : "",
+        normalized,
+      ].filter(Boolean),
+    ),
+  );
+}
+
+async function fetchProvider(baseUrl: string, selector: "callsign" | "hex" | "reg", value: string) {
+  const response = await fetch(`${baseUrl}/v2/${selector}/${encodeURIComponent(value)}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(6500),
+  });
+  if (!response.ok) throw new Error(`${baseUrl}: HTTP ${response.status}`);
+  const payload = (await response.json()) as { ac?: AdsbAircraft[] };
+  const aircraft = payload.ac?.find((item) => number(item.lat) != null && number(item.lon) != null) ?? null;
+  if (!aircraft) throw new Error(`${baseUrl}: nincs ilyen repülőgép`);
+  return aircraft;
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const radius = 6371;
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return radius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function routeFromRecord(route: {
+  airline?: { name?: string } | null;
+  origin?: Record<string, unknown>;
+  destination?: Record<string, unknown>;
+} | null | undefined): FlightRoute | null {
+  const origin = route?.origin;
+  const destination = route?.destination;
+  const originLat = number(origin?.latitude);
+  const originLon = number(origin?.longitude);
+  const destinationLat = number(destination?.latitude);
+  const destinationLon = number(destination?.longitude);
+  if (!origin || !destination || originLat == null || originLon == null || destinationLat == null || destinationLon == null) {
+    return null;
+  }
+  const airport = (data: Record<string, unknown>, lat: number, lon: number): RouteAirport => ({
+    iata: String(data.iata_code || ""),
+    icao: String(data.icao_code || ""),
+    name: String(data.name || ""),
+    city: String(data.municipality || ""),
+    country: String(data.country_name || ""),
+    lat,
+    lon,
+  });
+  return {
+    origin: airport(origin, originLat, originLon),
+    destination: airport(destination, destinationLat, destinationLon),
+    airlineName: route?.airline?.name ? String(route.airline.name) : null,
+  };
+}
+
+async function fetchRouteLookup(callsigns: string[]): Promise<RouteLookup> {
+  for (const callsign of callsigns) {
+    try {
+      const response = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!response.ok) continue;
+      const payload = (await response.json()) as {
+        response?: {
+          flightroute?: {
+            callsign_icao?: string | null;
+            callsign_iata?: string | null;
+            airline?: { name?: string } | null;
+            origin?: Record<string, unknown>;
+            destination?: Record<string, unknown>;
+          };
+        };
+      };
+      const route = payload.response?.flightroute;
+      const callsignIcao = route?.callsign_icao ? String(route.callsign_icao).toUpperCase() : null;
+      const callsignIata = route?.callsign_iata ? String(route.callsign_iata).toUpperCase() : null;
+      const parsedRoute = routeFromRecord(route);
+      if (!parsedRoute) {
+        if (callsignIcao || callsignIata) {
+          return { route: null, callsignIcao, callsignIata };
+        }
+        continue;
+      }
+      return {
+        route: parsedRoute,
+        callsignIcao,
+        callsignIata,
+      };
+    } catch {
+      // Ha nincs útvonaladat, a valós idejű telemetria továbbra is megjelenik.
+    }
+  }
+  return { route: null, callsignIcao: null, callsignIata: null };
+}
+
+async function resolveAirlineIcao(iata: string): Promise<string | null> {
+  const localMatch = (
+    airlines as Array<{ iata?: string; icao?: string; active?: string }>
+  ).find(
+    (airline) =>
+      String(airline.iata || "").toUpperCase() === iata &&
+      airline.active === "Y" &&
+      airline.icao,
+  );
+  if (localMatch?.icao) return localMatch.icao.toUpperCase();
+  return null;
+}
+
+async function resolveFlightNumber(input: string) {
+  const normalized = input.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const iataMatch = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
+  const airlineIcao = iataMatch ? await resolveAirlineIcao(iataMatch[1]) : null;
+  const candidates = staticCallsignCandidates(normalized, airlineIcao);
+  return {
+    candidates: Array.from(new Set(candidates.filter(Boolean))),
+    route: null,
+    resolvedAirlineIcao: airlineIcao,
+  };
+}
+
+function dateValue(value: string | null | undefined) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Az Aviationstack időbélyegeiben a dátum és az óra a repülőtér helyi ideje,
+ * miközben az ISO-eltolás több válaszban +00:00 marad. Ezért az időbélyeg
+ * naptári részét a külön megadott IANA-időzónában kell értelmezni.
+ */
+function airportDateValue(value: string | null | undefined, timeZone: string | null | undefined) {
+  if (!value) return null;
+  if (!timeZone) return dateValue(value);
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return dateValue(value);
+
+  const wanted = {
+    year: Number(match[1]), month: Number(match[2]), day: Number(match[3]),
+    hour: Number(match[4]), minute: Number(match[5]), second: Number(match[6] || 0),
+  };
+  const wantedAsUtc = Date.UTC(
+    wanted.year, wanted.month - 1, wanted.day,
+    wanted.hour, wanted.minute, wanted.second,
+  );
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hourCycle: "h23",
+    });
+    let guess = wantedAsUtc;
+    // Két lépés a nyári/téli időszámítás határán is stabil eredményt ad.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const parts = Object.fromEntries(
+        formatter.formatToParts(new Date(guess))
+          .filter((part) => part.type !== "literal")
+          .map((part) => [part.type, Number(part.value)]),
+      ) as Record<string, number>;
+      const representedAsUtc = Date.UTC(
+        parts.year, parts.month - 1, parts.day,
+        parts.hour, parts.minute, parts.second,
+      );
+      guess += wantedAsUtc - representedAsUtc;
+    }
+    const parsed = new Date(guess);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  } catch {
+    return dateValue(value);
+  }
+}
+
+function normalizedAirportDate(value: string | null | undefined, timeZone: string | null | undefined) {
+  return airportDateValue(value, timeZone)?.toISOString() || null;
+}
+
+async function fetchScheduledFlight(flight: string, candidates: string[]): Promise<ScheduledFlightInfo | null> {
+  const cacheKey = `${flight}:${candidates.join(",")}`;
+  const cached = scheduleCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const apiKey = process.env.AVIATIONSTACK_API_KEY;
+  if (!apiKey) throw new Error("A menetrendi adatforrás nincs beállítva.");
+
+  const iataInput = /^[A-Z0-9]{2}\d{1,4}[A-Z]?$/.test(flight);
+  const icaoCandidate = candidates.find((candidate) => /^[A-Z]{3}\d/.test(candidate));
+  const params = new URLSearchParams({ access_key: apiKey, limit: "20" });
+  params.set(iataInput ? "flight_iata" : "flight_icao", iataInput ? flight : (icaoCandidate || flight));
+
+  const response = await fetch(`https://api.aviationstack.com/v1/flights?${params}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`A menetrendi adatforrás nem elérhető (${response.status}).`);
+
+  const payload = (await response.json()) as {
+    data?: AviationstackFlight[];
+    error?: { message?: string };
+  };
+  if (payload.error) throw new Error(payload.error.message || "A menetrendi lekérdezés sikertelen.");
+
+  const now = Date.now();
+  const item = (payload.data || [])
+    .filter((candidate) => {
+      const departure = airportDateValue(
+        candidate.departure?.estimated || candidate.departure?.scheduled,
+        candidate.departure?.timezone,
+      );
+      const status = String(candidate.flight_status || "").toLowerCase();
+      if (["landed", "cancelled"].includes(status) || departure == null) return false;
+      return status === "active"
+        ? departure.getTime() >= now - 18 * 60 * 60 * 1000
+        : departure.getTime() >= now - 6 * 60 * 60 * 1000;
+    })
+    .sort((a, b) => {
+      const aActive = String(a.flight_status || "").toLowerCase() === "active" ? 0 : 1;
+      const bActive = String(b.flight_status || "").toLowerCase() === "active" ? 0 : 1;
+      return aActive - bActive ||
+        (airportDateValue(
+          a.departure?.estimated || a.departure?.scheduled,
+          a.departure?.timezone,
+        )?.getTime() ?? Infinity)
+        - (airportDateValue(
+          b.departure?.estimated || b.departure?.scheduled,
+          b.departure?.timezone,
+        )?.getTime() ?? Infinity);
+    })[0];
+
+  if (!item) {
+    scheduleCache.set(cacheKey, { expiresAt: now + 5 * 60_000, value: null });
+    return null;
+  }
+  const result: ScheduledFlightInfo = {
+    flight: item.flight?.iata || item.flight?.icao || flight,
+    callsign: item.flight?.icao || item.flight?.iata || flight,
+    status: item.flight_status || "scheduled",
+    airlineName: item.airline?.name || null,
+    origin: {
+      airport: item.departure?.airport || null, iata: item.departure?.iata || null,
+      icao: item.departure?.icao || null, timezone: item.departure?.timezone || null,
+      terminal: item.departure?.terminal || null, gate: item.departure?.gate || null,
+    },
+    destination: {
+      airport: item.arrival?.airport || null, iata: item.arrival?.iata || null,
+      icao: item.arrival?.icao || null, timezone: item.arrival?.timezone || null,
+      terminal: item.arrival?.terminal || null, gate: item.arrival?.gate || null,
+    },
+    scheduledDepartureAt: normalizedAirportDate(item.departure?.scheduled, item.departure?.timezone),
+    estimatedDepartureAt: normalizedAirportDate(
+      item.departure?.estimated || item.departure?.scheduled,
+      item.departure?.timezone,
+    ),
+    actualDepartureAt: normalizedAirportDate(item.departure?.actual, item.departure?.timezone),
+    scheduledArrivalAt: normalizedAirportDate(item.arrival?.scheduled, item.arrival?.timezone),
+    estimatedArrivalAt: normalizedAirportDate(
+      item.arrival?.estimated || item.arrival?.scheduled,
+      item.arrival?.timezone,
+    ),
+    actualArrivalAt: normalizedAirportDate(item.arrival?.actual, item.arrival?.timezone),
+    delayMinutes: number(item.departure?.delay),
+    aircraft: {
+      registration: item.aircraft?.registration || null,
+      typeIata: item.aircraft?.iata || null,
+      typeIcao: item.aircraft?.icao || null,
+      icao24: item.aircraft?.icao24?.replace(/[^A-Fa-f0-9]/g, "").toLowerCase() || null,
+    },
+    live: number(item.live?.latitude) != null && number(item.live?.longitude) != null ? {
+      updatedAt: item.live?.updated || null,
+      lat: number(item.live?.latitude) as number,
+      lon: number(item.live?.longitude) as number,
+      altitudeM: number(item.live?.altitude),
+      directionDeg: number(item.live?.direction),
+      speedKmh: number(item.live?.speed_horizontal),
+      verticalRateMs: number(item.live?.speed_vertical),
+      onGround: Boolean(item.live?.is_ground),
+    } : null,
+    source: "Aviationstack menetrendi adat",
+  };
+  scheduleCache.set(cacheKey, { expiresAt: now + 15 * 60_000, value: result });
+  return result;
+}
+
+async function routeFromSchedule(schedule: ScheduledFlightInfo | null): Promise<FlightRoute | null> {
+  if (!schedule) return null;
+  try {
+    const lookup = (iata: string | null, icao: string | null) => airports.find((airport) =>
+      (iata && airport.iata === iata) || (icao && airport.icao === icao),
+    ) || null;
+    const originData = lookup(schedule.origin.iata, schedule.origin.icao);
+    const destinationData = lookup(schedule.destination.iata, schedule.destination.icao);
+    if (!originData || !destinationData) return null;
+    const airport = (
+      data: typeof originData,
+      scheduledAirport: ScheduledFlightInfo["origin"],
+    ): RouteAirport => ({
+      iata: scheduledAirport.iata || data.iata || "",
+      icao: scheduledAirport.icao || data.icao || "",
+      name: scheduledAirport.airport || data.name || "",
+      city: data.city || scheduledAirport.iata || data.iata || data.icao || "",
+      country: data.country || "",
+      lat: Number(data.latitude),
+      lon: Number(data.longitude),
+    });
+    return {
+      origin: airport(originData, schedule.origin),
+      destination: airport(destinationData, schedule.destination),
+      airlineName: schedule.airlineName,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function shape(
+  ac: AdsbAircraft,
+  flight: string,
+  source: string,
+  route: FlightRoute | null,
+  schedule: ScheduledFlightInfo | null = null,
+) {
+  const lat = number(ac.lat);
+  const lon = number(ac.lon);
+  if (lat == null || lon == null) return null;
+  const altBaro = ac.alt_baro === "ground" ? 0 : convert(ac.alt_baro, 0.3048);
+  const speed = convert(ac.gs, 1.852);
+  const now = Date.now();
+  let journey = null;
+  const directRouteKm = route
+    ? haversineKm(route.origin.lat, route.origin.lon, route.destination.lat, route.destination.lon)
+    : 0;
+  const viaAircraftKm = route
+    ? haversineKm(route.origin.lat, route.origin.lon, lat, lon)
+      + haversineKm(lat, lon, route.destination.lat, route.destination.lon)
+    : 0;
+  // A hívójelek naponta ismétlődhetnek. A földrajzilag lehetetlen régi útvonalat
+  // inkább elrejtjük, mint hogy hamis repülőteret és útvonalat rajzoljunk.
+  const plausibleRoute = route && viaAircraftKm <= directRouteKm * 1.8 + 500 ? route : null;
+  if (plausibleRoute) {
+    const flownKm = haversineKm(plausibleRoute.origin.lat, plausibleRoute.origin.lon, lat, lon);
+    const remainingKm = haversineKm(lat, lon, plausibleRoute.destination.lat, plausibleRoute.destination.lon);
+    const totalKm = flownKm + remainingKm;
+    const effectiveSpeed = speed && speed > 150 ? speed : 750;
+    const geographicElapsedMinutes = Math.round((flownKm / effectiveSpeed) * 60);
+    const geographicRemainingMinutes = Math.round((remainingKm / effectiveSpeed) * 60);
+    // A pillanatnyi sebesség leszálláskor jelentősen leesik, ezért abból nem
+    // szabad visszaszámolni a teljes repülési időt. Elsődlegesen a szolgáltató
+    // tényleges (ennek hiányában menetrendi) indulási idejét használjuk.
+    const departureAt = dateValue(
+      schedule?.actualDepartureAt
+      || schedule?.estimatedDepartureAt
+      || schedule?.scheduledDepartureAt,
+    );
+    const arrivalAt = dateValue(
+      schedule?.actualArrivalAt
+      || schedule?.estimatedArrivalAt
+      || schedule?.scheduledArrivalAt,
+    );
+    const elapsedMinutes = departureAt
+      ? Math.max(0, Math.round((now - departureAt.getTime()) / 60_000))
+      : geographicElapsedMinutes;
+    const remainingMinutes = arrivalAt
+      ? Math.max(0, Math.round((arrivalAt.getTime() - now) / 60_000))
+      : geographicRemainingMinutes;
+    journey = {
+      ...plausibleRoute,
+      flownKm: Math.round(flownKm),
+      remainingKm: Math.round(remainingKm),
+      totalKm: Math.round(totalKm),
+      progressPercent: totalKm > 0 ? Math.round((flownKm / totalKm) * 100) : null,
+      elapsedMinutes,
+      remainingMinutes,
+      estimatedDepartureAt: departureAt?.toISOString()
+        || new Date(now - geographicElapsedMinutes * 60_000).toISOString(),
+      estimatedArrivalAt: arrivalAt?.toISOString()
+        || new Date(now + geographicRemainingMinutes * 60_000).toISOString(),
+      timingType: departureAt
+        ? "Tényleges vagy menetrendi időadat alapján"
+        : "Becsült, az aktuális helyzet és sebesség alapján",
+    };
+  }
+  return {
+    flight,
+    callsign: String(ac.flight || flight).trim(),
+    hex: String(ac.hex || "—").toUpperCase(),
+    lat,
+    lon,
+    altitudeM: altBaro,
+    geometricAltitudeM: convert(ac.alt_geom, 0.3048),
+    groundSpeedKmh: speed,
+    trueAirspeedKmh: convert(ac.tas, 1.852),
+    indicatedAirspeedKmh: convert(ac.ias, 1.852),
+    trackDeg: number(ac.track),
+    magneticHeadingDeg: number(ac.mag_heading),
+    trueHeadingDeg: number(ac.true_heading),
+    verticalRateMs: convert(ac.baro_rate, 0.00508, 1),
+    geometricRateMs: convert(ac.geom_rate, 0.00508, 1),
+    mach: number(ac.mach),
+    rollDeg: number(ac.roll),
+    navQnhHpa: number(ac.nav_qnh),
+    selectedAltitudeM: convert(ac.nav_altitude_mcp ?? ac.nav_altitude_fms, 0.3048),
+    navHeadingDeg: number(ac.nav_heading),
+    windSpeedKmh: convert(ac.wind_speed, 1.852),
+    windDirectionDeg: number(ac.wind_direction),
+    outsideAirTempC: number(ac.oat),
+    totalAirTempC: number(ac.tat),
+    squawk: number(ac.squawk),
+    category: typeof ac.category === "string" ? Number.parseInt(ac.category.replace(/\D/g, ""), 10) || null : number(ac.category),
+    messages: number(ac.messages),
+    rssiDbfs: number(ac.rssi),
+    seenSeconds: number(ac.seen),
+    positionAgeSeconds: number(ac.seen_pos),
+    distanceFromReceiverKm: convert(ac.dst, 1.609344, 1),
+    bearingFromReceiverDeg: number(ac.dir),
+    signalIntegrity: number(ac.nic),
+    containmentRadiusM: convert(ac.rc, 0.3048),
+    emergency: ac.emergency ? String(ac.emergency) : null,
+    onGround: ac.alt_baro === "ground",
+    source,
+    updatedAt: new Date().toISOString(),
+    journey,
+  };
+}
+
+function shapeScheduledLive(
+  schedule: ScheduledFlightInfo,
+  flight: string,
+  route: FlightRoute | null,
+) {
+  if (!schedule.live) return null;
+  const live = schedule.live;
+  // A shape() az ADS-B szabvány szerinti láb/csomó értékeket várja, ezért az
+  // Aviationstack SI-mértékegységeit itt visszaalakítjuk a közös feldolgozáshoz.
+  return shape({
+    flight: schedule.callsign || flight,
+    hex: "—",
+    lat: live.lat,
+    lon: live.lon,
+    alt_baro: live.onGround ? "ground" : live.altitudeM == null ? null : live.altitudeM / 0.3048,
+    gs: live.speedKmh == null ? null : live.speedKmh / 1.852,
+    track: live.directionDeg,
+    true_heading: live.directionDeg,
+    baro_rate: live.verticalRateMs == null ? null : live.verticalRateMs / 0.00508,
+    seen: live.updatedAt ? Math.max(0, (Date.now() - new Date(live.updatedAt).getTime()) / 1000) : null,
+  }, flight, "Aviationstack · élő pozíció", route, schedule);
+}
+
+export async function GET(request: NextRequest) {
+  const flight = (request.nextUrl.searchParams.get("flight") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (flight.length < 3 || flight.length > 10) {
+    return NextResponse.json({ error: "Adj meg egy érvényes járatszámot." }, { status: 400 });
+  }
+
+  const resolved = await resolveFlightNumber(flight);
+  const candidates = resolved.candidates;
+
+  if (request.nextUrl.searchParams.get("schedule") === "1") {
+    try {
+      const scheduled = await fetchScheduledFlight(flight, candidates);
+      return scheduled
+        ? NextResponse.json({ scheduled, searchedCallsigns: candidates })
+        : NextResponse.json({ error: `A ${flight} járathoz nem található közelgő indulás.` }, { status: 404 });
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "A menetrendi adatforrás nem elérhető." },
+        { status: 502 },
+      );
+    }
+  }
+
+  // A böngészőből indított közvetlen airplanes.live kérés időnként CORS-védelembe
+  // ütközik. Ezért az élő keresést elsődlegesen a saját szerveroldali végpontunk
+  // végzi el, és csak az eredményt küldi vissza a kliensnek.
+  const providers = ["https://api.airplanes.live", "https://api.adsb.lol"];
+  try {
+    // Minden érvényes hívójel–szolgáltató pár egyszerre indul, így egy lassú
+    // végpont nem tartja fel a működő találatot.
+    const found = await Promise.any(
+      candidates.flatMap((callsign) => providers.map(async (provider) => ({
+        aircraft: await fetchProvider(provider, "callsign", callsign),
+        callsign,
+        provider,
+      }))),
+    );
+    const routeLookup = await fetchRouteLookup([
+      String(found.aircraft.flight || "").trim().toUpperCase(),
+      found.callsign,
+      flight,
+    ].filter(Boolean));
+    let verifiedRoute: FlightRoute | null = null;
+    let verifiedSchedule: ScheduledFlightInfo | null = null;
+    try {
+      verifiedSchedule = await fetchScheduledFlight(flight, candidates);
+      verifiedRoute = await routeFromSchedule(verifiedSchedule);
+    } catch {
+      // A telemetria menetrendi adat nélkül is megjeleníthető.
+    }
+    const data = shape(
+      found.aircraft,
+      flight,
+      found.provider.includes("airplanes.live")
+        ? "airplanes.live · szerverkapcsolat"
+        : "adsb.lol · tartalék szerverkapcsolat",
+      verifiedRoute || routeLookup.route,
+      verifiedSchedule,
+    );
+    if (data) {
+      return NextResponse.json({
+        data,
+        searchedCallsigns: candidates,
+        resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+      });
+    }
+  } catch {
+    // Egyik hívójel sem látható jelenleg az ADS-B hálózatokon.
+  }
+
+
+  // Egyes óceáni vagy ritkább lefedettségű járatokat a közösségi ADS-B hálózat
+  // nem ad vissza callsign alapján, miközben a menetrendi szolgáltató élő
+  // koordinátát közöl. Ilyenkor ezt használjuk tartalékként.
+  try {
+    const schedule = await fetchScheduledFlight(flight, candidates);
+    const scheduledRoute = await routeFromSchedule(schedule);
+    const liveData = schedule ? shapeScheduledLive(schedule, flight, scheduledRoute) : null;
+    if (liveData) {
+      return NextResponse.json({
+        data: liveData,
+        searchedCallsigns: candidates,
+        resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+      });
+    }
+
+    if (schedule) {
+      const identifiers = [
+        schedule.aircraft.icao24 ? { selector: "hex" as const, value: schedule.aircraft.icao24 } : null,
+        schedule.aircraft.registration ? { selector: "reg" as const, value: schedule.aircraft.registration } : null,
+      ].filter((item): item is { selector: "hex" | "reg"; value: string } => item != null);
+      if (identifiers.length) {
+        const found = await Promise.any(
+          identifiers.flatMap((identifier) => providers.map(async (provider) => ({
+            aircraft: await fetchProvider(provider, identifier.selector, identifier.value),
+            provider,
+          }))),
+        );
+        const data = shape(
+          found.aircraft,
+          flight,
+          `${found.provider.includes("airplanes.live") ? "airplanes.live" : "adsb.lol"} · repülőgép-azonosító alapján`,
+          scheduledRoute,
+          schedule,
+        );
+        if (data) {
+          return NextResponse.json({
+            data,
+            searchedCallsigns: candidates,
+            resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+          });
+        }
+      }
+    }
+  } catch {
+    // A szokásos, részletes hibaüzenet következik.
+  }
+
+  return NextResponse.json(
+    {
+      error: `A ${flight} járatszámot ${candidates.filter((candidate) => candidate !== flight).join(", ") || flight} hívójelre oldottuk fel, de a repülőgép most nem látható az ADS-B hálózaton.`,
+      searchedCallsigns: candidates,
+      resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+    },
+    { status: 404 },
+  );
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = (await request.json()) as {
+      flight?: string;
+      aircraft?: AdsbAircraft;
+      flightroute?: {
+        airline?: { name?: string } | null;
+        origin?: Record<string, unknown>;
+        destination?: Record<string, unknown>;
+      } | null;
+    };
+    const flight = String(body.flight || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!flight || !body.aircraft) {
+      return NextResponse.json({ error: "Hiányos repülési adat." }, { status: 400 });
+    }
+    const fallbackRoute = routeFromRecord(body.flightroute);
+    let verifiedRoute: FlightRoute | null = null;
+    let verifiedSchedule: ScheduledFlightInfo | null = null;
+    try {
+      const resolved = await resolveFlightNumber(flight);
+      verifiedSchedule = await fetchScheduledFlight(flight, resolved.candidates);
+      verifiedRoute = await routeFromSchedule(verifiedSchedule);
+    } catch {
+      // Ha a menetrendi ellenőrzés átmenetileg nem elérhető, marad a közösségi útvonaladat.
+    }
+    const data = shape(
+      body.aircraft,
+      flight,
+      "airplanes.live · közvetlen kapcsolat",
+      verifiedRoute || fallbackRoute,
+      verifiedSchedule,
+    );
+    if (!data) return NextResponse.json({ error: "Nincs érvényes pozícióadat." }, { status: 400 });
+    return NextResponse.json({ data });
+  } catch {
+    return NextResponse.json({ error: "A repülési adat nem dolgozható fel." }, { status: 400 });
+  }
+}
