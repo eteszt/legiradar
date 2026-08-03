@@ -283,17 +283,64 @@ export function selectNext24hOccurrence(
     .sort((left, right) => Date.parse(left.departureAt) - Date.parse(right.departureAt))[0] || null;
 }
 
+export function scheduleQueriesFromSearch(rawPayload: unknown, identifiers: string[]) {
+  const payload = object(rawPayload);
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  const wanted = new Set(identifiers.map(normalizeFlightIdentifier).filter(Boolean));
+  const queries: string[] = [];
+
+  for (const rawResult of results) {
+    const result = object(rawResult);
+    if (text(result.type)?.toLowerCase() !== "schedule") continue;
+    const detail = object(result.detail);
+    const flight = normalizeFlightIdentifier(detail.flight || result.id);
+    const callsign = normalizeFlightIdentifier(detail.callsign);
+    if (!wanted.has(flight) && !wanted.has(callsign)) continue;
+    if (/^[A-Z0-9]{2}\d{1,4}[A-Z]?$/.test(flight) && !queries.includes(flight)) queries.push(flight);
+  }
+  return queries;
+}
+
+async function resolveScheduleQueries(wanted: string[]) {
+  for (const identifier of wanted.slice(0, 4)) {
+    try {
+      const params = new URLSearchParams({ query: identifier, limit: "50" });
+      const payload = await fetchJson(`https://www.flightradar24.com/v1/search/web/find?${params}`, 1);
+      const resolved = scheduleQueriesFromSearch(payload, wanted);
+      if (resolved.length > 0) return resolved;
+    } catch {
+      // A pontos keresőindex átmeneti hibája esetén a kereskedelmi alakra esünk vissza.
+    }
+  }
+  const commercial = wanted.filter((identifier) => /^[A-Z0-9]{2}\d{1,4}[A-Z]?$/.test(identifier));
+  return commercial.length > 0 ? commercial.slice(0, 2) : wanted.slice(0, 1);
+}
+
 export async function findNext24hSchedule(
   identifiers: string[],
   now = Date.now(),
 ): Promise<Fr24ScheduleOccurrence | null> {
   const wanted = Array.from(new Set(identifiers.map(normalizeFlightIdentifier).filter(Boolean)));
-  const responses = await Promise.allSettled(wanted.slice(0, 8).map(async (identifier) => {
-    const params = new URLSearchParams({ query: identifier, fetchBy: "flight", page: "1", limit: "100" });
-    const payload = await fetchJson(`https://api.flightradar24.com/common/v1/flight/list.json?${params}`);
-    const data = nested(payload, "result", "response", "data");
-    return Array.isArray(data) ? data.map(mapScheduleItem).filter((item): item is Fr24ScheduleOccurrence => item != null) : [];
-  }));
-  const occurrences = responses.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-  return selectNext24hOccurrence(occurrences, wanted, now);
+  const queries = await resolveScheduleQueries(wanted);
+  const selectionIdentifiers = Array.from(new Set([...wanted, ...queries]));
+
+  // A korábbi párhuzamos aliaslekérdezések egyetlen keresésnél akár nyolc
+  // FR24-kérést indítottak, ami a Railway IP-ről azonnali 429-et válthatott ki.
+  // A keresőindex által igazolt kereskedelmi azonosítókat ezért sorrendben,
+  // találatig kérdezzük le.
+  for (const query of queries) {
+    try {
+      const params = new URLSearchParams({ query, fetchBy: "flight", page: "1", limit: "100" });
+      const payload = await fetchJson(`https://api.flightradar24.com/common/v1/flight/list.json?${params}`, 1);
+      const data = nested(payload, "result", "response", "data");
+      const occurrences = Array.isArray(data)
+        ? data.map(mapScheduleItem).filter((item): item is Fr24ScheduleOccurrence => item != null)
+        : [];
+      const selected = selectNext24hOccurrence(occurrences, selectionIdentifiers, now);
+      if (selected) return selected;
+    } catch {
+      // A következő, pontosan feloldott kereskedelmi azonosítót is megpróbáljuk.
+    }
+  }
+  return null;
 }

@@ -4,6 +4,7 @@ import {
   isExactLiveCandidate,
   mapScheduleItem,
   mapTargetedAirborneDetail,
+  scheduleQueriesFromSearch,
   selectNext24hOccurrence,
   type Fr24ScheduleOccurrence,
 } from "../app/api/flight/fr24.ts";
@@ -93,4 +94,24 @@ test("24-hour boundary is inclusive and older occurrences are excluded", () => {
     occurrence({ departureAt: "2026-08-04T12:00:00Z" }),
   ], ["DL183"], now);
   assert.equal(selected?.departureAt, "2026-08-04T12:00:00Z");
+});
+
+test("FR24 search index resolves commercial and ICAO forms to one schedule query", () => {
+  const searchPayload = {
+    results: [
+      { id: "AAL", type: "operator", detail: { iata: "AA" } },
+      {
+        id: "AA1028",
+        type: "schedule",
+        detail: { flight: "AA1028", callsign: "AAL1028", operator: "AAL" },
+      },
+      {
+        id: "AA10280",
+        type: "schedule",
+        detail: { flight: "AA10280", callsign: "AAL10280", operator: "AAL" },
+      },
+    ],
+  };
+  assert.deepEqual(scheduleQueriesFromSearch(searchPayload, ["AA1028", "AAL1028"]), ["AA1028"]);
+  assert.deepEqual(scheduleQueriesFromSearch(searchPayload, ["AAL1028"]), ["AA1028"]);
 });
