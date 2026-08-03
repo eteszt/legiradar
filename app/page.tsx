@@ -1801,8 +1801,8 @@ export default function Home() {
               <div className="airline-brand"><b>{brand.monogram}</b><span>{brand.name}</span></div>
               <button className="share-button" onClick={() => void shareFlight()} type="button">↗ {shareLabel}</button>
             </div>
-            <div className="eyebrow">AKTUÁLIS JÁRAT</div>
-            <h1>{telemetry.flight}</h1>
+            <div className="eyebrow">AKTUÁLIS JÁRAT · ADS-B HÍVÓJEL</div>
+            <h1>{telemetry.callsign || telemetry.flight}</h1>
             <div className="route-heading">
               {weatherFlight ? (
                 <AirportWeatherPopover
@@ -1833,7 +1833,11 @@ export default function Home() {
                 ? `${telemetry.journey.origin.city} → ${telemetry.journey.destination.city}`
                 : "Ehhez a járathoz nincs nyilvános útvonaladat"}
             </div>
-            <div className="callsign">{telemetry.journey?.airlineName || "Légitársaság nem ismert"} · {telemetry.callsign} · ICAO24 {telemetry.hex}</div>
+            <div className="callsign">
+              {telemetry.journey?.airlineName || "Légitársaság nem ismert"}
+              {telemetry.flight && telemetry.flight !== telemetry.callsign ? ` · járatszám ${telemetry.flight}` : ""}
+              {` · ICAO24 ${telemetry.hex}`}
+            </div>
             <div className="phase">
               {telemetry.onGround ? "FÖLDÖN" : telemetry.verticalRateMs != null && telemetry.verticalRateMs > 1 ? "EMELKEDIK" : telemetry.verticalRateMs != null && telemetry.verticalRateMs < -1 ? "SÜLLYED" : "ÚTON"}
               <b>•</b> {!telemetry.emergency || ["nincs", "none"].includes(telemetry.emergency.toLowerCase()) ? "RENDBEN" : telemetry.emergency.toUpperCase()}
