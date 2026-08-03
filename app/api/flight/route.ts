@@ -584,7 +584,19 @@ async function fetchScheduledFlight(flight: string, candidates: string[]): Promi
     // A licencelt Aviationstack marad független tartalékforrásként.
   }
 
-  const aviationstack = await fetchAviationstackScheduledFlight(flight, candidates);
+  let aviationstack: ScheduledFlightInfo | null = null;
+  try {
+    aviationstack = await fetchAviationstackScheduledFlight(flight, candidates);
+  } catch (error) {
+    // A tartalék menetrendi forrás rate-limitje nem jelent valódi „nincs járat”
+    // állapotot. Ha FR24 sem adott találatot, a hívó 404/menetrendi fallback
+    // irányba mehet tovább, ne 502-vel álljon meg.
+    if (error instanceof Error && /\(429\)/.test(error.message)) {
+      scheduleCache.set(cacheKey, { expiresAt: Date.now() + 60_000, value: null });
+      return null;
+    }
+    throw error;
+  }
   if (!aviationstack) {
     scheduleCache.set(cacheKey, { expiresAt: Date.now() + 5 * 60_000, value: null });
     return null;
@@ -1061,17 +1073,64 @@ export async function GET(request: NextRequest) {
         .includes(liveIdentity.flight);
     const trustedSchedule = scheduleMatchesLiveIdentity ? verifiedSchedule : null;
     const trustedScheduleRoute = scheduleMatchesLiveIdentity ? verifiedRoute : null;
+    const effectiveRoute = liveIdentity?.route
+      || trustedScheduleRoute
+      || (resolved.commercialInput ? routeLookup.route : null);
     const data = shape(
       found.aircraft,
       liveIdentity?.flight || trustedSchedule?.flight || resolved.flightNumber || flight,
       liveIdentity
         ? `${found.provider.label} · élő járatazonosítással ellenőrizve`
         : `${found.provider.label} · szerverkapcsolat`,
-      liveIdentity?.route
-        || trustedScheduleRoute
-        || (resolved.commercialInput ? routeLookup.route : null),
+      effectiveRoute,
       trustedSchedule,
     );
+    const altitudeFt = found.aircraft.alt_baro === "ground"
+      ? 0
+      : typeof found.aircraft.alt_baro === "number" ? found.aircraft.alt_baro : null;
+    const speedKt = typeof found.aircraft.gs === "number" ? found.aircraft.gs : null;
+    const airborne = (altitudeFt != null && altitudeFt > 1000) || (speedKt != null && speedKt > 80);
+    if (data && !airborne && effectiveRoute) {
+      const nowIso = new Date().toISOString();
+      const fallbackSchedule: ScheduledFlightInfo = trustedSchedule || {
+        flight: liveIdentity?.flight || resolved.flightNumber || flight,
+        callsign: liveIdentity?.callsign || liveCallsign || found.callsign,
+        status: "active · on ground",
+        airlineName: effectiveRoute.airlineName,
+        origin: {
+          airport: effectiveRoute.origin.name,
+          iata: effectiveRoute.origin.iata,
+          icao: effectiveRoute.origin.icao,
+          timezone: null,
+          terminal: null,
+          gate: null,
+        },
+        destination: {
+          airport: effectiveRoute.destination.name,
+          iata: effectiveRoute.destination.iata,
+          icao: effectiveRoute.destination.icao,
+          timezone: null,
+          terminal: null,
+          gate: null,
+        },
+        scheduledDepartureAt: nowIso,
+        estimatedDepartureAt: nowIso,
+        actualDepartureAt: null,
+        scheduledArrivalAt: data.journey?.estimatedArrivalAt || null,
+        estimatedArrivalAt: data.journey?.estimatedArrivalAt || null,
+        actualArrivalAt: null,
+        delayMinutes: null,
+        aircraft: {
+          registration: String(found.aircraft.r || "") || null,
+          typeIata: String(found.aircraft.t || "") || null,
+          typeIcao: String(found.aircraft.t || "") || null,
+          icao24: String(found.aircraft.hex || "").toLowerCase() || null,
+        },
+        live: null,
+        source: `${found.provider.label} · földön álló pontos járat, menetrendi fallback`,
+      };
+      return NextResponse.json({ scheduled: { ...fallbackSchedule, route: effectiveRoute }, searchedCallsigns: candidates });
+    }
     if (data) {
       return liveResponse(flight, {
         data,
