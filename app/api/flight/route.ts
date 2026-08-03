@@ -309,11 +309,15 @@ async function resolveFlightNumber(input: string) {
   const curatedCommercialFlight = iataMatch ? normalized : commercialFlightFromCallsign(normalized);
   const resolvedIata = trustedCommercialAlias(providerIata, curatedCommercialFlight);
   const resolvedOperator = resolvedIcao?.match(/^([A-Z]{3})/)?.[1] || airlineIcao;
+  const curatedCandidates = curatedCommercialFlight
+    ? staticCallsignCandidates(curatedCommercialFlight, resolvedOperator)
+    : [];
   const resolvedCandidates = resolvedIata
     ? staticCallsignCandidates(resolvedIata, resolvedOperator)
     : [];
   const candidates = Array.from(new Set([
     resolvedIcao,
+    ...curatedCandidates,
     ...resolvedCandidates,
     ...staticCandidates,
     resolvedIata,
@@ -1041,7 +1045,7 @@ export async function GET(request: NextRequest) {
     const trustedScheduleRoute = scheduleMatchesLiveIdentity ? verifiedRoute : null;
     const effectiveRoute = liveIdentity?.route
       || trustedScheduleRoute
-      || (resolved.commercialInput ? routeLookup.route : null);
+      || routeLookup.route;
     const data = shape(
       found.aircraft,
       resolved.flightNumber || trustedSchedule?.flight || liveIdentity?.flight || flight,
