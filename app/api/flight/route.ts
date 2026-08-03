@@ -8,6 +8,7 @@ import {
   type Fr24LiveFlight,
   type Fr24ScheduleOccurrence,
 } from "./fr24";
+import { operatorIcaoOverrides, staticCallsignCandidates } from "./identifiers";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -129,28 +130,6 @@ const communityProviders = [
   { baseUrl: "https://opendata.adsb.fi/api", label: "ADSB.fi" },
 ] as const;
 
-const operators: Record<string, string> = {
-  W6: "WZZ",
-  W4: "WMT",
-  FR: "RYR",
-  LH: "DLH",
-  BA: "BAW",
-  KL: "KLM",
-  AF: "AFR",
-  U2: "EZY",
-  LX: "SWR",
-  OS: "AUA",
-  EW: "EWG",
-  QR: "QTR",
-  EK: "UAE",
-  TK: "THY",
-  IB: "IBE",
-  AY: "FIN",
-  LO: "LOT",
-  SK: "SAS",
-  DY: "NOZ",
-};
-
 function number(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -163,27 +142,6 @@ function number(value: unknown): number | null {
 function convert(value: unknown, factor: number, digits = 0) {
   const parsed = number(value);
   return parsed == null ? null : Number((parsed * factor).toFixed(digits));
-}
-
-function staticCallsignCandidates(flight: string, dynamicIcao?: string | null) {
-  const normalized = flight.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const match = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
-  if (!match) return [normalized];
-  const [, iata, suffix] = match;
-  const unpadded = suffix.replace(/^0+/, "") || "0";
-  const icao = dynamicIcao || operators[iata];
-  const numericSuffix = /^\d+$/.test(unpadded) ? unpadded : null;
-  return Array.from(
-    new Set(
-      [
-        icao ? `${icao}${suffix}` : "",
-        icao ? `${icao}${unpadded}` : "",
-        icao && numericSuffix ? `${icao}${numericSuffix.padStart(3, "0")}` : "",
-        icao && numericSuffix ? `${icao}${numericSuffix.padStart(4, "0")}` : "",
-        normalized,
-      ].filter(Boolean),
-    ),
-  );
 }
 
 async function fetchProvider(baseUrl: string, selector: "callsign" | "hex" | "reg", value: string) {
@@ -318,7 +276,7 @@ async function resolveAirlineIcao(iata: string): Promise<string | null> {
   // A kézzel karbantartott lista a jelenlegi operatív ICAO-kódokat tartalmazza;
   // ezt részesítjük előnyben az airline-codes csomag esetenként elavult adataival
   // szemben (például W4: WMT, nem WER).
-  if (operators[iata]) return operators[iata];
+  if (operatorIcaoOverrides[iata]) return operatorIcaoOverrides[iata];
   const localMatch = (
     airlines as Array<{ iata?: string; icao?: string; active?: string }>
   ).find(
