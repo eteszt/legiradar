@@ -109,12 +109,14 @@ async function fetchJsonViaCurl(url: string): Promise<unknown> {
   return JSON.parse(stdout);
 }
 
-async function fetchTextViaCurl(url: string): Promise<string> {
+async function fetchTextViaCurl(url: string, extraHeaders: Record<string, string> = {}): Promise<string> {
+  const headerArgs = Object.entries(extraHeaders).flatMap(([name, value]) => ["-H", `${name}: ${value}`]);
   const { stdout } = await execFileAsync("curl", [
-    "-fsSL", "--retry", "2", "--retry-delay", "1", "--max-time", "20",
+    "-fsSL", "--retry", "2", "--retry-delay", "1", "--max-time", "30",
     "-A", USER_AGENT, "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    ...headerArgs,
     "-e", HEADERS.Referer, url,
-  ], { maxBuffer: 8 * 1024 * 1024 });
+  ], { maxBuffer: 10 * 1024 * 1024 });
   return stdout;
 }
 
@@ -143,7 +145,11 @@ async function fetchJson(url: string, attempts = 2): Promise<unknown> {
   }
 }
 
-async function fetchText(url: string, attempts = 2): Promise<string> {
+async function fetchText(
+  url: string,
+  attempts = 2,
+  extraHeaders: Record<string, string> = {},
+): Promise<string> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -151,6 +157,7 @@ async function fetchText(url: string, attempts = 2): Promise<string> {
         headers: {
           ...HEADERS,
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          ...extraHeaders,
         },
         cache: "no-store",
         signal: AbortSignal.timeout(10_000),
@@ -163,7 +170,7 @@ async function fetchText(url: string, attempts = 2): Promise<string> {
     }
   }
   try {
-    return await fetchTextViaCurl(url);
+    return await fetchTextViaCurl(url, extraHeaders);
   } catch (curlError) {
     const fetchMessage = lastError instanceof Error ? lastError.message : String(lastError);
     const curlMessage = curlError instanceof Error ? curlError.message : String(curlError);
@@ -436,6 +443,14 @@ export async function findNext24hSchedule(
     }
     try {
       const html = await fetchText(`https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`, 1);
+      const selected = selectNext24hOccurrence(mapSchedulePageRows(html, query), selectionIdentifiers, now);
+      if (selected) return selected;
+    } catch {
+      // A közvetlen FR24 oldal is lehet IP-alapon blokkolt.
+    }
+    try {
+      const readerUrl = `https://r.jina.ai/https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`;
+      const html = await fetchText(readerUrl, 1, { "X-Return-Format": "html" });
       const selected = selectNext24hOccurrence(mapSchedulePageRows(html, query), selectionIdentifiers, now);
       if (selected) return selected;
     } catch {
