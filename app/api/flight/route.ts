@@ -757,27 +757,44 @@ async function fetchLiveFlightIdentity(
   const lon = number(aircraft.lon);
   if (lat == null || lon == null) return null;
 
-  const params = new URLSearchParams({
-    bounds: `${Math.min(90, lat + 4)},${Math.max(-90, lat - 4)},${Math.max(-180, lon - 6)},${Math.min(180, lon + 6)}`,
+  const baseParams = {
     faa: "1", satellite: "1", mlat: "1", flarm: "1", adsb: "1",
     gnd: "1", air: "1", vehicles: "1", estimated: "1", maxage: "14400",
     gliders: "1", stats: "1",
-  });
-  const response = await fetch(`https://data-cloud.flightradar24.com/zones/fcgi/feed.js?${params}`, {
-    headers: {
-      Accept: "application/json",
-      Referer: "https://www.flightradar24.com/",
-      "User-Agent": "Mozilla/5.0",
-    },
-    cache: "no-store",
-    signal: AbortSignal.timeout(6500),
-  });
-  if (!response.ok) throw new Error(`Élő járatazonosítás: HTTP ${response.status}`);
-  const payload = (await response.json()) as Record<string, unknown>;
-  const rows = Object.values(payload).filter((value): value is unknown[] => Array.isArray(value));
-  const row = rows.find((value) => String(value[0] || "").trim().toUpperCase() === hex)
-    || rows.find((value) => String(value[16] || "").trim().toUpperCase() === normalizedCallsign);
-  if (!row) return null;
+  };
+  const boundsCandidates = [
+    `${Math.min(90, lat + 4)},${Math.max(-90, lat - 4)},${Math.max(-180, lon - 6)},${Math.min(180, lon + 6)}`,
+    "90,-90,-180,180",
+  ];
+  let row: unknown[] | null = null;
+  let lastError: unknown = null;
+  for (const bounds of boundsCandidates) {
+    try {
+      const params = new URLSearchParams({ bounds, ...baseParams });
+      const response = await fetch(`https://data-cloud.flightradar24.com/zones/fcgi/feed.js?${params}`, {
+        headers: {
+          Accept: "application/json",
+          Referer: "https://www.flightradar24.com/",
+          "User-Agent": "Mozilla/5.0",
+        },
+        cache: "no-store",
+        signal: AbortSignal.timeout(6500),
+      });
+      if (!response.ok) throw new Error(`Élő járatazonosítás: HTTP ${response.status}`);
+      const payload = (await response.json()) as Record<string, unknown>;
+      const rows = Object.values(payload).filter((value): value is unknown[] => Array.isArray(value));
+      row = rows.find((value) => String(value[0] || "").trim().toUpperCase() === hex)
+        || rows.find((value) => String(value[16] || "").trim().toUpperCase() === normalizedCallsign)
+        || null;
+      if (row) break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!row) {
+    if (lastError) throw lastError;
+    return null;
+  }
   const originIata = String(row[11] || "").trim().toUpperCase();
   const destinationIata = String(row[12] || "").trim().toUpperCase();
   const flight = String(row[13] || "").trim().toUpperCase();
