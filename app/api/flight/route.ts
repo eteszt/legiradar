@@ -8,7 +8,12 @@ import {
   type Fr24LiveFlight,
   type Fr24ScheduleOccurrence,
 } from "./fr24";
-import { operatorIcaoOverrides, staticCallsignCandidates } from "./identifiers";
+import {
+  commercialFlightFromCallsign,
+  operatorIcaoOverrides,
+  staticCallsignCandidates,
+  trustedCommercialAlias,
+} from "./identifiers";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -299,8 +304,10 @@ async function resolveFlightNumber(input: string) {
   // Az ADSBDB járatútvonal-feloldása mindkét azonosítót visszaadhatja, ezért
   // még az élő pozíció keresése előtt hozzáadjuk ezeket a jelölteket.
   const routeLookup = await fetchRouteLookup(staticCandidates);
-  const resolvedIata = routeLookup.callsignIata;
+  const providerIata = routeLookup.callsignIata;
   const resolvedIcao = routeLookup.callsignIcao;
+  const curatedCommercialFlight = iataMatch ? normalized : commercialFlightFromCallsign(normalized);
+  const resolvedIata = trustedCommercialAlias(providerIata, curatedCommercialFlight);
   const resolvedOperator = resolvedIcao?.match(/^([A-Z]{3})/)?.[1] || airlineIcao;
   const resolvedCandidates = resolvedIata
     ? staticCallsignCandidates(resolvedIata, resolvedOperator)
@@ -314,10 +321,11 @@ async function resolveFlightNumber(input: string) {
   return {
     candidates,
     routeLookup,
-    // Közvetlen ICAO/ADS-B hívójel esetén az ADSBDB callsign_iata mezője lehet
-    // egy korábbi, már másik útvonalhoz tartozó megfeleltetés. A menetrendi
-    // szolgáltatót ezért ilyenkor az eredeti ICAO hívójellel kérdezzük le.
-    flightNumber: iataMatch ? (resolvedIata || normalized) : null,
+    // Kereskedelmi inputnál az eredeti IATA-járatszám megbízhatóbb a statikus
+    // route-adatbázis esetenként elavult callsign_iata mezőjénél (FH/FHY esetén
+    // az utóbbi XD kódot ad). Ismert ICAO-prefixnél a kézi override visszafelé
+    // is biztonságosan feloldható.
+    flightNumber: curatedCommercialFlight,
     resolvedAirlineIcao: airlineIcao,
     commercialInput: Boolean(iataMatch),
   };
@@ -1036,7 +1044,7 @@ export async function GET(request: NextRequest) {
       || (resolved.commercialInput ? routeLookup.route : null);
     const data = shape(
       found.aircraft,
-      liveIdentity?.flight || trustedSchedule?.flight || resolved.flightNumber || flight,
+      resolved.flightNumber || trustedSchedule?.flight || liveIdentity?.flight || flight,
       liveIdentity
         ? `${found.provider.label} · élő járatazonosítással ellenőrizve`
         : `${found.provider.label} · szerverkapcsolat`,
@@ -1051,7 +1059,7 @@ export async function GET(request: NextRequest) {
     if (data && !airborne && effectiveRoute) {
       const nowIso = new Date().toISOString();
       const fallbackSchedule: ScheduledFlightInfo = trustedSchedule || {
-        flight: liveIdentity?.flight || resolved.flightNumber || flight,
+        flight: resolved.flightNumber || liveIdentity?.flight || flight,
         callsign: liveIdentity?.callsign || liveCallsign || found.callsign,
         status: "active · on ground",
         airlineName: effectiveRoute.airlineName,

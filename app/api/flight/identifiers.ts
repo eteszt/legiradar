@@ -21,6 +21,23 @@ export const operatorIcaoOverrides: Record<string, string> = {
   DY: "NOZ",
 };
 
+export function trustedCommercialAlias(providerAlias: string | null, curatedFlight: string | null) {
+  const provider = providerAlias?.toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
+  const curated = curatedFlight?.toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
+  if (!provider) return null;
+  return !curated || provider === curated ? provider : null;
+}
+
+export function commercialFlightFromCallsign(callsign: string) {
+  const normalized = callsign.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const match = normalized.match(/^([A-Z]{3})(\d{1,4}[A-Z]?)$/);
+  if (!match) return null;
+  const [, icao, suffix] = match;
+  const iata = Object.entries(operatorIcaoOverrides)
+    .find(([, currentIcao]) => currentIcao === icao)?.[0];
+  return iata ? `${iata}${suffix}` : null;
+}
+
 export function staticCallsignCandidates(flight: string, dynamicIcao?: string | null) {
   const normalized = flight.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const match = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
