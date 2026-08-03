@@ -104,6 +104,13 @@ type WeatherFlight = {
 type AirportWeather = {
   icao: string;
   name: string | null;
+  targetAt: string | null;
+  targetTemperature: {
+    validAt: string;
+    temperatureC: number;
+    apparentTemperatureC: number | null;
+    source: string;
+  } | null;
   current: {
     observedAt: string | null;
     temperatureC: number | null;
@@ -275,7 +282,8 @@ function budapestDateTime(iso: string | null | undefined) {
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
     scheduled: "INDULÁSRA VÁR", active: "AKTÍV", cancelled: "TÖRÖLVE",
-    incident: "ESEMÉNY", diverted: "ÁTIRÁNYÍTVA", landed: "LESZÁLLT",
+    estimated: "VÁRHATÓ", delayed: "KÉSIK", incident: "ESEMÉNY",
+    diverted: "ÁTIRÁNYÍTVA", landed: "LESZÁLLT",
   };
   return labels[status.toLowerCase()] || status.toUpperCase();
 }
@@ -714,7 +722,7 @@ function airportLandingAlert(weather: AirportWeather | null, targetAt: string | 
   const forecast = weather.forecast;
   if (forecast && Number.isFinite(targetMs)) {
     for (const period of forecast.periods) {
-      if (!period.from || !period.to || targetMs < Date.parse(period.from) || targetMs > Date.parse(period.to)) continue;
+      if (!period.from || !period.to || targetMs < Date.parse(period.from) || targetMs >= Date.parse(period.to)) continue;
       weatherCodes(period.weather, "érkezéskori TAF", period.probability);
       wind(period.windSpeedKt, period.windGustKt, "érkezéskori TAF");
       visibility(period.visibility, "érkezéskori TAF");
@@ -751,18 +759,17 @@ function AirportWeatherCard({
   role,
   airport,
   weather,
-  targetAt,
   loading,
   error,
 }: {
   role: "INDULÁSI" | "ÉRKEZÉSI";
   airport: RouteAirport;
   weather: AirportWeather | null;
-  targetAt: string | null;
   loading: boolean;
   error: string | null;
 }) {
-  const targetMs = targetAt ? Date.parse(targetAt) : Number.NaN;
+  const forecastTargetAt = weather?.targetAt || null;
+  const targetMs = forecastTargetAt ? Date.parse(forecastTargetAt) : Number.NaN;
   const forecast = weather?.forecast || null;
   const forecastCoversTarget = Boolean(
     forecast
@@ -770,21 +777,26 @@ function AirportWeatherCard({
       && forecast.validFrom
       && forecast.validTo
       && targetMs >= Date.parse(forecast.validFrom)
-      && targetMs <= Date.parse(forecast.validTo),
+      && targetMs < Date.parse(forecast.validTo),
   );
   const matchingPeriods = forecastCoversTarget
     ? forecast?.periods.filter((period) => {
       if (!period.from || !period.to) return false;
-      return targetMs >= Date.parse(period.from) && targetMs <= Date.parse(period.to);
+      return targetMs >= Date.parse(period.from) && targetMs < Date.parse(period.to);
     }) || []
     : [];
-  const targetPeriod = matchingPeriods.find((period) =>
-    period.probability != null
-      || period.windGustKt != null
-      || (period.weather != null && period.weather !== "NSW")
-      || period.change === "TEMPO",
-  ) || matchingPeriods[0] || null;
+  const basePeriods = matchingPeriods.filter((period) =>
+    period.probability == null && period.change !== "TEMPO",
+  );
+  const targetPeriod = [...basePeriods]
+    .sort((left, right) => Date.parse(right.from || "") - Date.parse(left.from || ""))[0]
+    || matchingPeriods[0]
+    || null;
+  const conditionalPeriods = matchingPeriods.filter((period) =>
+    period !== targetPeriod && (period.probability != null || period.change === "TEMPO"),
+  );
   const current = weather?.current || null;
+  const targetTemperature = weather?.targetTemperature || null;
   const categoryClass = current?.flightCategory?.toLowerCase() || "unknown";
 
   return (
@@ -808,7 +820,7 @@ function AirportWeatherCard({
           <section className="airport-current-weather">
             <div className="airport-weather-section-title">
               <span>AKTUÁLIS METAR</span>
-              <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} CET` : "nincs aktuális mérés"}</small>
+              <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} · budapesti idő` : "nincs aktuális mérés"}</small>
             </div>
             {current ? (
               <>
@@ -823,10 +835,11 @@ function AirportWeatherCard({
               </>
             ) : <p className="airport-weather-state">Aktuális METAR nem érhető el.</p>}
           </section>
-          <section className="airport-forecast-weather">
+          {forecastTargetAt && (
+            <section className="airport-forecast-weather">
             <div className="airport-weather-section-title">
               <span>TAF · {role === "INDULÁSI" ? "INDULÁSKOR" : "ÉRKEZÉSKOR"}</span>
-              <small>{targetAt ? `${budapestDateTime(targetAt)} CET` : "időpont nélkül"}</small>
+              <small>{`${budapestDateTime(forecastTargetAt)} · budapesti idő`}</small>
             </div>
             {!forecast ? (
               <p className="airport-weather-state">TAF előrejelzés nem érhető el.</p>
@@ -839,15 +852,28 @@ function AirportWeatherCard({
                   {targetPeriod.weather || targetPeriod.change || "Várható reptéri körülmények"}
                 </strong>
                 <div className="airport-weather-metrics forecast">
+                  <div><span>HŐMÉRSÉKLET</span><strong>{targetTemperature ? `${targetTemperature.temperatureC} °C` : "—"}</strong><small>{targetTemperature?.apparentTemperatureC == null ? "órás előrejelzés nem érhető el" : `hőérzet ${targetTemperature.apparentTemperatureC} °C`}</small></div>
                   <div><span>SZÉL</span><strong>{airportWind(targetPeriod.windDirectionDeg, targetPeriod.windVariable, targetPeriod.windSpeedKt, targetPeriod.windGustKt)}</strong></div>
                   <div><span>LÁTÁSTÁVOLSÁG</span><strong>{targetPeriod.visibility ? `${targetPeriod.visibility} SM` : "—"}</strong></div>
                 </div>
                 <p className="airport-clouds"><span>FELHŐZET</span>{cloudText(targetPeriod.clouds)}</p>
+                {conditionalPeriods.length > 0 && (
+                  <div className="airport-conditional-forecast">
+                    <span>ÁTMENTI / VALÓSZÍNŰSÉGI KOCKÁZAT</span>
+                    {conditionalPeriods.map((period, index) => (
+                      <strong key={`${period.from}-${period.change}-${period.probability}-${index}`}>
+                        {[period.change, period.probability == null ? null : `${period.probability}%`, period.weather, airportWind(period.windDirectionDeg, period.windVariable, period.windSpeedKt, period.windGustKt)].filter(Boolean).join(" · ")}
+                      </strong>
+                    ))}
+                  </div>
+                )}
+                {targetTemperature && <small className="target-temperature-source">{targetTemperature.source} · {budapestDateTime(targetTemperature.validAt)} · budapesti idő</small>}
               </>
             ) : (
               <p className="airport-weather-state">A TAF érvényes, de az adott időponthoz nincs külön előrejelzési szakasz.</p>
             )}
-          </section>
+            </section>
+          )}
           {(current?.raw || forecast?.raw) && (
             <details className="raw-aviation-weather">
               <summary>Eredeti METAR / TAF</summary>
@@ -936,7 +962,6 @@ function AirportWeatherPopover({
             role={role}
             airport={airport}
             weather={weather}
-            targetAt={targetAt}
             loading={loading}
             error={error}
           />
@@ -1300,66 +1325,6 @@ function RadarMap({
   );
 }
 
-async function directFlightLookup(flight: string, candidates: string[]): Promise<Telemetry> {
-  const uniqueCandidates = Array.from(new Set([flight, ...candidates].filter(Boolean)));
-  const results = await Promise.all(
-    uniqueCandidates.map(async (callsign) => {
-      try {
-        const response = await fetch(
-          `https://api.airplanes.live/v2/callsign/${encodeURIComponent(callsign)}`,
-          { cache: "no-store" },
-        );
-        if (!response.ok) return null;
-        const payload = (await response.json()) as { ac?: Array<Record<string, unknown>> };
-        const aircraft = payload.ac?.find(
-          (item) => typeof item.lat === "number" && typeof item.lon === "number",
-        );
-        return aircraft ? { aircraft, callsign } : null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  const found = results.find(Boolean);
-  if (!found) throw new Error("A repülőgép most nem látható az élő ADS-B hálózaton.");
-
-  const liveCallsign = String(found.aircraft.flight || found.callsign).trim().toUpperCase();
-  let flightroute: Record<string, unknown> | null = null;
-  for (const routeCallsign of Array.from(new Set([liveCallsign, flight, ...uniqueCandidates]))) {
-    try {
-      const response = await fetch(
-        `https://api.adsbdb.com/v0/callsign/${encodeURIComponent(routeCallsign)}`,
-        { cache: "no-store" },
-      );
-      if (!response.ok) continue;
-      const payload = (await response.json()) as {
-        response?: { flightroute?: Record<string, unknown> };
-      };
-      if (payload.response?.flightroute) {
-        flightroute = payload.response.flightroute;
-        break;
-      }
-    } catch {
-      // Az élő pozíció útvonaladat nélkül is használható.
-    }
-  }
-
-  const normalized = await fetch("/api/flight", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      flight,
-      aircraft: found.aircraft,
-      flightroute,
-    }),
-  });
-  const payload = (await normalized.json()) as { data?: Telemetry; error?: string };
-  if (!normalized.ok || !payload.data) {
-    throw new Error(payload.error || "Az élő adat nem dolgozható fel.");
-  }
-  return payload.data;
-}
-
 export default function Home() {
   const [query, setQuery] = useState("");
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
@@ -1397,12 +1362,11 @@ export default function Home() {
       const payload = (await response.json()) as {
         data?: Telemetry;
         error?: string;
-        searchedCallsigns?: string[];
       };
-      const next =
-        response.ok && payload.data
-          ? payload.data
-          : await directFlightLookup(normalized, payload.searchedCallsigns || [normalized]);
+      if (!response.ok || !payload.data) {
+        throw new Error(payload.error || "A repülőgép most nem látható az élő ADS-B hálózaton.");
+      }
+      const next = payload.data;
       setTelemetry(next);
       if (next.altitudeM != null && Number.isFinite(next.altitudeM)) {
         const sampledAt = Date.now();
@@ -1566,8 +1530,14 @@ export default function Home() {
   const weatherRouteKey = weatherFlight
     ? `${scheduled?.flight || telemetry?.flight}-${weatherFlight.journey.origin.icao}-${weatherFlight.journey.destination.icao}-${weatherFlight.preflight ? "preflight" : "live"}`
     : "";
-  const airportWeatherKey = weatherFlight
+  const airportWeatherIds = weatherFlight
     ? `${weatherFlight.journey.origin.icao},${weatherFlight.journey.destination.icao}`
+    : "";
+  const airportWeatherTargets = weatherFlight?.preflight
+    ? [weatherFlight.journey.estimatedDepartureAt, weatherFlight.journey.estimatedArrivalAt]
+    : [null, null];
+  const airportWeatherKey = airportWeatherIds
+    ? `${airportWeatherIds}|${airportWeatherTargets.map((value) => value || "current").join("|")}`
     : "";
 
   useEffect(() => {
@@ -1587,7 +1557,11 @@ export default function Home() {
       setAirportWeatherLoading(true);
       setAirportWeatherError(null);
       try {
-        const response = await fetch(`/api/weather/airports?ids=${encodeURIComponent(airportWeatherKey)}`, {
+        const [ids, target0, target1] = airportWeatherKey.split("|");
+        const params = new URLSearchParams({ ids });
+        if (target0 && target0 !== "current") params.set("target0", target0);
+        if (target1 && target1 !== "current") params.set("target1", target1);
+        const response = await fetch(`/api/weather/airports?${params}`, {
           cache: "no-store",
           signal: controller.signal,
         });
@@ -1767,14 +1741,14 @@ export default function Home() {
               <div className="departure-card">
                 <span>{status === "active-no-signal" ? "INDULÁSI IDŐ" : "VÁRHATÓ INDULÁS"}</span>
                 <strong>{budapestDateTime(scheduled.estimatedDepartureAt)}</strong>
-                <small>CET</small>
+                <small>BUDAPESTI IDŐ</small>
                 {scheduled.delayMinutes != null && scheduled.delayMinutes > 0 && (
                   <b>{fmt(scheduled.delayMinutes)} perc várható késés</b>
                 )}
               </div>
               <div className="schedule-grid">
-                <div><span>MENETREND SZERINT · CET</span><strong>{budapestDateTime(scheduled.scheduledDepartureAt)}</strong></div>
-                <div><span>VÁRHATÓ ÉRKEZÉS · CET</span><strong>{budapestDateTime(scheduled.estimatedArrivalAt)}</strong></div>
+                <div><span>MENETREND SZERINT · BUDAPESTI IDŐ</span><strong>{budapestDateTime(scheduled.scheduledDepartureAt)}</strong></div>
+                <div><span>VÁRHATÓ ÉRKEZÉS · BUDAPESTI IDŐ</span><strong>{budapestDateTime(scheduled.estimatedArrivalAt)}</strong></div>
                 <div><span>TERMINÁL</span><strong>{scheduled.origin.terminal || "—"}</strong></div>
                 <div><span>KAPU</span><strong>{scheduled.origin.gate || "—"}</strong></div>
               </div>
@@ -1847,7 +1821,7 @@ export default function Home() {
           <div className="journey-panel">
             <div className="journey-times">
               <div>
-                <span>INDULÁS · CET <em>becsült</em></span>
+                <span>INDULÁS · BUDAPESTI IDŐ <em>{telemetry.journey?.timingType.startsWith("Tényleges") ? "tényleges" : "becsült"}</em></span>
                 <strong>{clockTime(telemetry.journey?.estimatedDepartureAt, telemetry.journey?.elapsedMinutes ?? null, lastSync, -1)}</strong>
               </div>
               <div>
@@ -1855,7 +1829,7 @@ export default function Home() {
                 <strong>{duration(telemetry.journey?.elapsedMinutes)}</strong>
               </div>
               <div>
-                <span>ÉRKEZÉS · CET <em>becsült</em></span>
+                <span>ÉRKEZÉS · BUDAPESTI IDŐ <em>becsült</em></span>
                 <strong>{clockTime(telemetry.journey?.estimatedArrivalAt, telemetry.journey?.remainingMinutes ?? null, lastSync, 1)}</strong>
               </div>
               <div>

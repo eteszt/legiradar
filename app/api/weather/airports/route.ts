@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import airportCodes from "@nwpr/airport-codes";
+import { fetchHourlyWeather } from "./hourly";
 
 export const runtime = "nodejs";
 
@@ -83,17 +85,41 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [metars, tafs] = await Promise.all([
+    const targets = ids.map((_, index) => request.nextUrl.searchParams.get(`target${index}`));
+    const [metarResult, tafResult, temperatureResult] = await Promise.allSettled([
       fetchAviationWeather<MetarRecord>("metar", ids),
       fetchAviationWeather<TafRecord>("taf", ids),
+      Promise.all(ids.map(async (icao, index) => {
+        const targetAt = targets[index];
+        if (!targetAt || !Number.isFinite(Date.parse(targetAt))) return null;
+        const airport = airportCodes.find((item) => item.icao === icao);
+        const latitude = Number(airport?.latitude);
+        const longitude = Number(airport?.longitude);
+        if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+          || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return null;
+        try {
+          return await fetchHourlyWeather(latitude, longitude, targetAt);
+        } catch {
+          // A kiegészítő hőmérsékletforrás hibája nem teheti használhatatlanná
+          // a hiteles repülésmeteorológiai METAR/TAF adatokat.
+          return null;
+        }
+      })),
     ]);
+    const metars = metarResult.status === "fulfilled" ? metarResult.value : [];
+    const tafs = tafResult.status === "fulfilled" ? tafResult.value : [];
+    const targetTemperatures = temperatureResult.status === "fulfilled"
+      ? temperatureResult.value
+      : ids.map(() => null);
 
-    const airports = ids.map((icao) => {
+    const airportRecords = ids.map((icao, index) => {
       const metar = metars.find((item) => item.icaoId?.toUpperCase() === icao);
       const taf = tafs.find((item) => item.icaoId?.toUpperCase() === icao);
       return {
         icao,
         name: metar?.name || taf?.name || null,
+        targetAt: targets[index] || null,
+        targetTemperature: targetTemperatures[index],
         current: metar ? {
           observedAt: metar.reportTime || null,
           temperatureC: typeof metar.temp === "number" ? metar.temp : null,
@@ -132,7 +158,7 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json(
-      { airports, source: "NOAA/NWS Aviation Weather Center", updatedAt: new Date().toISOString() },
+      { airports: airportRecords, source: "NOAA/NWS Aviation Weather Center", updatedAt: new Date().toISOString() },
       { headers: { "Cache-Control": "public, max-age=120, s-maxage=300, stale-while-revalidate=300" } },
     );
   } catch (error) {

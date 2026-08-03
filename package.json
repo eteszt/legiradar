@@ -10,7 +10,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p ${PORT:-3000}",
-    "lint": "eslint . --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern .next",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
   },
   "dependencies": {
     "@nwpr/airport-codes": "^3.0.3",
