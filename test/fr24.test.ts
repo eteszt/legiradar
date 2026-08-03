@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isExactLiveCandidate,
   mapScheduleItem,
+  mapSchedulePageRows,
   mapTargetedAirborneDetail,
   scheduleQueriesFromSearch,
   selectNext24hOccurrence,
@@ -114,4 +115,28 @@ test("FR24 search index resolves commercial and ICAO forms to one schedule query
   };
   assert.deepEqual(scheduleQueriesFromSearch(searchPayload, ["AA1028", "AAL1028"]), ["AA1028"]);
   assert.deepEqual(scheduleQueriesFromSearch(searchPayload, ["AAL1028"]), ["AA1028"]);
+});
+
+test("FR24 public flight page maps exact dated schedule rows", () => {
+  const html = `
+    <table id="tbl-datatable"><tbody>
+      <tr class=" data-row" data-timestamp="1785782040">
+        <a href="/data/airports/aua">(AUA)</a>
+        <a href="/data/airports/mia">(MIA)</a>
+        <td data-timestamp="1785793080">21:38</td>
+        <span>Estimated</span>
+      </tr>
+      <tr class="other" data-timestamp="1785780000">
+        <a href="/data/airports/dfw">(DFW)</a>
+        <a href="/data/airports/lax">(LAX)</a>
+      </tr>
+    </tbody></table>`;
+  const rows = mapSchedulePageRows(html, "AA1028");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].flight, "AA1028");
+  assert.equal(rows[0].departureAt, "2026-08-03T18:34:00.000Z");
+  assert.equal(rows[0].arrivalAt, "2026-08-03T21:38:00.000Z");
+  assert.equal(rows[0].origin?.iata, "AUA");
+  assert.equal(rows[0].destination?.iata, "MIA");
+  assert.match(rows[0].status, /estimated/i);
 });

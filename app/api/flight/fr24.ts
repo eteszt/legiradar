@@ -109,6 +109,15 @@ async function fetchJsonViaCurl(url: string): Promise<unknown> {
   return JSON.parse(stdout);
 }
 
+async function fetchTextViaCurl(url: string): Promise<string> {
+  const { stdout } = await execFileAsync("curl", [
+    "-fsSL", "--retry", "2", "--retry-delay", "1", "--max-time", "20",
+    "-A", USER_AGENT, "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "-e", HEADERS.Referer, url,
+  ], { maxBuffer: 8 * 1024 * 1024 });
+  return stdout;
+}
+
 async function fetchJson(url: string, attempts = 2): Promise<unknown> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -127,6 +136,34 @@ async function fetchJson(url: string, attempts = 2): Promise<unknown> {
   }
   try {
     return await fetchJsonViaCurl(url);
+  } catch (curlError) {
+    const fetchMessage = lastError instanceof Error ? lastError.message : String(lastError);
+    const curlMessage = curlError instanceof Error ? curlError.message : String(curlError);
+    throw new Error(`${fetchMessage}; curl fallback: ${curlMessage}`);
+  }
+}
+
+async function fetchText(url: string, attempts = 2): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          ...HEADERS,
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, attempt * 400));
+    }
+  }
+  try {
+    return await fetchTextViaCurl(url);
   } catch (curlError) {
     const fetchMessage = lastError instanceof Error ? lastError.message : String(lastError);
     const curlMessage = curlError instanceof Error ? curlError.message : String(curlError);
@@ -261,6 +298,61 @@ export function mapScheduleItem(rawItem: unknown): Fr24ScheduleOccurrence | null
   };
 }
 
+function decodeHtml(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function rowText(html: string) {
+  return decodeHtml(html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function mapSchedulePageRows(html: string, flight: string): Fr24ScheduleOccurrence[] {
+  const normalizedFlight = normalizeFlightIdentifier(flight);
+  const rows: Fr24ScheduleOccurrence[] = [];
+  const rowPattern = /<tr\b[^>]*\bclass=["'][^"']*\bdata-row\b[^"']*["'][^>]*>[\s\S]*?<\/tr>/gi;
+  for (const match of html.matchAll(rowPattern)) {
+    const row = match[0];
+    const departureSeconds = finiteNumber(row.match(/<tr\b[^>]*\bdata-timestamp=["'](\d+)["']/i)?.[1]);
+    if (departureSeconds == null) continue;
+    const departureAt = new Date(departureSeconds * 1000).toISOString();
+    const timestamps = Array.from(row.matchAll(/\bdata-timestamp=["'](\d+)["']/gi))
+      .map((item) => finiteNumber(item[1]))
+      .filter((value): value is number => value != null && value > 0);
+    const arrivalSeconds = timestamps.filter((value) => value !== departureSeconds).at(-1) ?? null;
+    const airportCodes = Array.from(row.matchAll(/href=["']\/data\/airports\/([a-z0-9]{3})["']/gi))
+      .map((item) => item[1].toUpperCase())
+      .filter((value, index, array) => array.indexOf(value) === index);
+    if (airportCodes.length < 2) continue;
+    const statusText = rowText(row);
+    const statusMatch = statusText.match(/\b(Cancelled|Canceled|Estimated|Delayed|Landed|Scheduled)\b/i);
+    rows.push({
+      flight: normalizedFlight,
+      callsign: null,
+      status: statusMatch?.[1] || "scheduled",
+      departureAt,
+      estimatedDepartureAt: null,
+      actualDepartureAt: null,
+      arrivalAt: arrivalSeconds == null ? null : new Date(arrivalSeconds * 1000).toISOString(),
+      estimatedArrivalAt: null,
+      actualArrivalAt: null,
+      origin: { iata: airportCodes[0], icao: null, name: null, city: null, country: null, lat: null, lon: null },
+      destination: { iata: airportCodes[1], icao: null, name: null, city: null, country: null, lat: null, lon: null },
+      registration: null,
+      aircraftType: text(statusText.match(/\b([A-Z0-9]{3,4})\b\s+[—-]\s+\d{1,2}:\d{2}/)?.[1]),
+      hex: null,
+    });
+  }
+  return rows;
+}
+
 export function selectNext24hOccurrence(
   occurrences: Fr24ScheduleOccurrence[],
   identifiers: string[],
@@ -337,6 +429,14 @@ export async function findNext24hSchedule(
         ? data.map(mapScheduleItem).filter((item): item is Fr24ScheduleOccurrence => item != null)
         : [];
       const selected = selectNext24hOccurrence(occurrences, selectionIdentifiers, now);
+      if (selected) return selected;
+    } catch {
+      // A JSON lista Railwayről időnként 429-et kap. Ilyenkor ugyanazon pontos
+      // kereskedelmi azonosító nyilvános, dátumozott járatoldalát olvassuk.
+    }
+    try {
+      const html = await fetchText(`https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`, 1);
+      const selected = selectNext24hOccurrence(mapSchedulePageRows(html, query), selectionIdentifiers, now);
       if (selected) return selected;
     } catch {
       // A következő, pontosan feloldott kereskedelmi azonosítót is megpróbáljuk.
