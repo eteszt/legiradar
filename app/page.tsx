@@ -820,7 +820,7 @@ function AirportWeatherCard({
           <section className="airport-current-weather">
             <div className="airport-weather-section-title">
               <span>AKTUÁLIS METAR</span>
-              <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} · budapesti idő` : "nincs aktuális mérés"}</small>
+              <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} · CET` : "nincs aktuális mérés"}</small>
             </div>
             {current ? (
               <>
@@ -839,7 +839,7 @@ function AirportWeatherCard({
             <section className="airport-forecast-weather">
             <div className="airport-weather-section-title">
               <span>TAF · {role === "INDULÁSI" ? "INDULÁSKOR" : "ÉRKEZÉSKOR"}</span>
-              <small>{`${budapestDateTime(forecastTargetAt)} · budapesti idő`}</small>
+              <small>{`${budapestDateTime(forecastTargetAt)} · CET`}</small>
             </div>
             {!forecast ? (
               <p className="airport-weather-state">TAF előrejelzés nem érhető el.</p>
@@ -867,7 +867,7 @@ function AirportWeatherCard({
                     ))}
                   </div>
                 )}
-                {targetTemperature && <small className="target-temperature-source">{targetTemperature.source} · {budapestDateTime(targetTemperature.validAt)} · budapesti idő</small>}
+                {targetTemperature && <small className="target-temperature-source">{targetTemperature.source} · {budapestDateTime(targetTemperature.validAt)} · CET</small>}
               </>
             ) : (
               <p className="airport-weather-state">A TAF érvényes, de az adott időponthoz nincs külön előrejelzési szakasz.</p>
@@ -1644,6 +1644,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
+          <small className="app-version">202608031851</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
