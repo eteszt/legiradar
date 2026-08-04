@@ -109,6 +109,8 @@ type AirportWeather = {
     validAt: string;
     temperatureC: number;
     apparentTemperatureC: number | null;
+    precipitationMm: number | null;
+    precipitationProbabilityPct: number | null;
     source: string;
   } | null;
   current: {
@@ -146,6 +148,8 @@ type AirportWeather = {
     }>;
   } | null;
 };
+
+type AirportForecastPeriod = NonNullable<AirportWeather["forecast"]>["periods"][number];
 
 type AirportWeatherPayload = {
   airports: AirportWeather[];
@@ -641,6 +645,59 @@ function airportWind(direction: number | null, variable: boolean, speed: number 
   return `${heading} · ${Math.round(speed)} kt${gust == null ? "" : `, lökés ${Math.round(gust)} kt`} · ${Math.round(speed * 1.852)} km/h`;
 }
 
+function plainFlightCategory(category: string | null) {
+  if (category === "VFR") return { badge: "JÓ", summary: "Jó látási és repülési körülmények" };
+  if (category === "MVFR") return { badge: "KORLÁTOZOTT", summary: "Korlátozott látási vagy felhőzeti körülmények" };
+  if (category === "IFR") return { badge: "GYENGE", summary: "Kedvezőtlen látási vagy felhőzeti körülmények" };
+  if (category === "LIFR") return { badge: "NAGYON GYENGE", summary: "Nagyon kedvezőtlen repülőtéri körülmények" };
+  return { badge: "NINCS ADAT", summary: "A repülési kategória nem érhető el" };
+}
+
+function metricWind(direction: number | null, variable: boolean, speedKt: number | null, gustKt: number | null = null) {
+  if (speedKt == null) return { value: "—", detail: "nincs széladat" };
+  const directionText = variable ? "változó irányból" : direction == null ? "irányadat nélkül" : `${compass(direction).split(" ").at(-1)} felől`;
+  const gust = gustKt == null ? "" : ` · széllökés ${Math.round(gustKt * 1.852)} km/h`;
+  return { value: `${Math.round(speedKt * 1.852)} km/h`, detail: `${directionText}${gust}` };
+}
+
+function metricVisibility(raw: string | null) {
+  if (!raw) return { value: "—", detail: "nincs látástávolság-adat" };
+  const atLeast = /[+P]/i.test(raw);
+  const miles = Number.parseFloat(raw.replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(miles)) return { value: "—", detail: `eredeti adat: ${raw} SM` };
+  const km = miles * 1.609344;
+  const rounded = km >= 9.5 ? Math.round(km) : Math.round(km * 10) / 10;
+  return { value: `${atLeast ? "legalább " : ""}${fmt(rounded, rounded % 1 === 0 ? 0 : 1)} km`, detail: atLeast ? "ennél messzebbre is ellátni" : "vízszintes látástávolság" };
+}
+
+function aviationPhenomenon(code: string | null | undefined) {
+  const value = (code || "").toUpperCase();
+  if (!value) return null;
+  const intensity = value.includes("+") ? "Erős " : value.includes("-") ? "Gyenge " : "";
+  if (value.includes("TS") && value.includes("RA")) return `${intensity}zivatar esővel`;
+  if (value.includes("TS")) return `${intensity}zivatar`;
+  if (value.includes("SHRA")) return `${intensity}zápor`;
+  if (value.includes("FZRA")) return `${intensity}ónos eső`;
+  if (value.includes("RA")) return `${intensity}eső`;
+  if (value.includes("DZ")) return `${intensity}szitálás`;
+  if (value.includes("SN")) return `${intensity}havazás`;
+  if (value.includes("GR") || value.includes("GS")) return `${intensity}jégeső`;
+  return null;
+}
+
+function phenomenonFromMetar(raw: string | null | undefined) {
+  if (!raw) return null;
+  return aviationPhenomenon(raw.split(/\s+/).find((token) => /(?:TS|SH|FZ)?(?:RA|DZ|SN|GR|GS)/i.test(token)));
+}
+
+function friendlyConditional(period: AirportForecastPeriod) {
+  const phenomenon = aviationPhenomenon(period.weather) || "kedvezőtlenebb időjárás";
+  const chance = period.probability == null ? null : `${period.probability}% esély`;
+  const temporary = period.change === "TEMPO" ? "átmenetileg" : null;
+  const lead = [chance, temporary].filter(Boolean).join(" · ");
+  return `${lead ? `${lead}: ` : ""}${phenomenon.toLocaleLowerCase("hu-HU")}`;
+}
+
 function cloudText(clouds: Array<{ cover: string; baseFt: number | null; type: string | null }>, fallback = "—") {
   if (clouds.length === 0) return fallback;
   return clouds.map((cloud) => `${cloud.cover}${cloud.baseFt == null ? "" : ` ${cloud.baseFt} ft`}${cloud.type ? ` ${cloud.type}` : ""}`).join(" · ");
@@ -796,89 +853,137 @@ function AirportWeatherCard({
     period !== targetPeriod && (period.probability != null || period.change === "TEMPO"),
   );
   const current = weather?.current || null;
-  const targetTemperature = weather?.targetTemperature || null;
+  const targetWeather = weather?.targetTemperature || null;
   const categoryClass = current?.flightCategory?.toLowerCase() || "unknown";
+  const category = plainFlightCategory(current?.flightCategory || null);
+  const currentWind = metricWind(current?.windDirectionDeg ?? null, current?.windVariable || false, current?.windSpeedKt ?? null);
+  const currentVisibility = metricVisibility(current?.visibility || null);
+  const currentPrecipitation = phenomenonFromMetar(current?.raw) || "Nincs jelzett csapadék";
+  const forecastWind = metricWind(
+    targetPeriod?.windDirectionDeg ?? null,
+    targetPeriod?.windVariable || false,
+    targetPeriod?.windSpeedKt ?? null,
+    targetPeriod?.windGustKt ?? null,
+  );
+  const forecastVisibility = metricVisibility(targetPeriod?.visibility || null);
+  const forecastPhenomenon = aviationPhenomenon(targetPeriod?.weather) || "Nem jelez jelentős csapadékot";
 
   return (
-    <article className="airport-weather-card">
+    <article className="airport-weather-card plain-weather-card">
       <header>
         <div>
           <span>{role} REPTÉR</span>
           <h3>{airport.iata} <small>{airport.icao}</small></h3>
           <p>{airport.city} · {weather?.name || airport.name}</p>
         </div>
-        {current && <b className={`flight-category ${categoryClass}`}>{current.flightCategory || "N/A"}</b>}
+        {current && <b className={`flight-category ${categoryClass}`}>{category.badge}</b>}
       </header>
       {loading ? (
-        <p className="airport-weather-state">METAR és TAF adatok betöltése…</p>
+        <p className="airport-weather-state">Időjárási adatok betöltése…</p>
       ) : error ? (
         <p className="airport-weather-state error">{error}</p>
       ) : !weather ? (
         <p className="airport-weather-state">Ehhez a repülőtérhez nem érkezett időjárási adat.</p>
       ) : (
         <>
-          <section className="airport-current-weather">
+          <section className="airport-current-weather plain-weather-section">
             <div className="airport-weather-section-title">
-              <span>AKTUÁLIS METAR</span>
+              <span>MOST A REPTÉREN</span>
               <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} · CET` : "nincs aktuális mérés"}</small>
             </div>
             {current ? (
               <>
-                <strong className="airport-condition-summary">{flightCategoryLabel(current.flightCategory)}</strong>
-                <div className="airport-weather-metrics">
-                  <div><span>HŐMÉRSÉKLET</span><strong>{current.temperatureC == null ? "—" : `${current.temperatureC} °C`}</strong><small>harmatpont {current.dewpointC == null ? "—" : `${current.dewpointC} °C`}</small></div>
-                  <div><span>SZÉL</span><strong>{airportWind(current.windDirectionDeg, current.windVariable, current.windSpeedKt)}</strong></div>
-                  <div><span>LÁTÁSTÁVOLSÁG</span><strong>{current.visibility ? `${current.visibility} SM` : "—"}</strong></div>
-                  <div><span>QNH</span><strong>{current.pressureHpa == null ? "—" : `${Math.round(current.pressureHpa)} hPa`}</strong></div>
+                <strong className="airport-condition-summary plain">{category.summary}</strong>
+                <div className="plain-weather-metrics">
+                  <div className="temperature"><span>HŐMÉRSÉKLET</span><strong>{current.temperatureC == null ? "—" : `${fmt(current.temperatureC)} °C`}</strong><small>aktuális mérés</small></div>
+                  <div className="wind"><span>SZÉL</span><strong>{currentWind.value}</strong><small>{currentWind.detail}</small></div>
+                  <div className="visibility"><span>LÁTÓTÁVOLSÁG</span><strong>{currentVisibility.value}</strong><small>{currentVisibility.detail}</small></div>
+                  <div className="precipitation"><span>CSAPADÉK</span><strong>{currentPrecipitation}</strong><small>a METAR megfigyelése alapján</small></div>
                 </div>
-                <p className="airport-clouds"><span>FELHŐZET</span>{cloudText(current.clouds, current.cloudSummary || "—")}</p>
               </>
-            ) : <p className="airport-weather-state">Aktuális METAR nem érhető el.</p>}
+            ) : <p className="airport-weather-state">Aktuális mérés nem érhető el.</p>}
           </section>
+
           {forecastTargetAt && (
-            <section className="airport-forecast-weather">
-            <div className="airport-weather-section-title">
-              <span>TAF · {role === "INDULÁSI" ? "INDULÁSKOR" : "ÉRKEZÉSKOR"}</span>
-              <small>{`${budapestDateTime(forecastTargetAt)} · CET`}</small>
-            </div>
-            {!forecast ? (
-              <p className="airport-weather-state">TAF előrejelzés nem érhető el.</p>
-            ) : !forecastCoversTarget ? (
-              <p className="airport-weather-state future">A jelenlegi TAF még nem fedi le ezt az időpontot. Az indulás közeledtével automatikusan frissül.</p>
-            ) : targetPeriod ? (
-              <>
-                <strong className="airport-condition-summary">
-                  {targetPeriod.probability ? `${targetPeriod.probability}% ` : ""}
-                  {targetPeriod.weather || targetPeriod.change || "Várható reptéri körülmények"}
-                </strong>
-                <div className="airport-weather-metrics forecast">
-                  <div><span>HŐMÉRSÉKLET</span><strong>{targetTemperature ? `${targetTemperature.temperatureC} °C` : "—"}</strong><small>{targetTemperature?.apparentTemperatureC == null ? "órás előrejelzés nem érhető el" : `hőérzet ${targetTemperature.apparentTemperatureC} °C`}</small></div>
-                  <div><span>SZÉL</span><strong>{airportWind(targetPeriod.windDirectionDeg, targetPeriod.windVariable, targetPeriod.windSpeedKt, targetPeriod.windGustKt)}</strong></div>
-                  <div><span>LÁTÁSTÁVOLSÁG</span><strong>{targetPeriod.visibility ? `${targetPeriod.visibility} SM` : "—"}</strong></div>
-                </div>
-                <p className="airport-clouds"><span>FELHŐZET</span>{cloudText(targetPeriod.clouds)}</p>
-                {conditionalPeriods.length > 0 && (
-                  <div className="airport-conditional-forecast">
-                    <span>ÁTMENTI / VALÓSZÍNŰSÉGI KOCKÁZAT</span>
-                    {conditionalPeriods.map((period, index) => (
-                      <strong key={`${period.from}-${period.change}-${period.probability}-${index}`}>
-                        {[period.change, period.probability == null ? null : `${period.probability}%`, period.weather, airportWind(period.windDirectionDeg, period.windVariable, period.windSpeedKt, period.windGustKt)].filter(Boolean).join(" · ")}
-                      </strong>
-                    ))}
+            <section className="airport-forecast-weather plain-weather-section">
+              <div className="airport-weather-section-title">
+                <span>{role === "INDULÁSI" ? "INDULÁSKOR" : "ÉRKEZÉSKOR"} VÁRHATÓ</span>
+                <small>{`${budapestDateTime(forecastTargetAt)} · CET`}</small>
+              </div>
+              {!forecast ? (
+                <p className="airport-weather-state">Repülőtéri előrejelzés nem érhető el.</p>
+              ) : !forecastCoversTarget ? (
+                <p className="airport-weather-state future">A jelenlegi előrejelzés még nem fedi le ezt az időpontot. Az utazás közeledtével automatikusan frissül.</p>
+              ) : targetPeriod ? (
+                <>
+                  <strong className="airport-condition-summary plain">
+                    {aviationPhenomenon(targetPeriod.weather) || "Várható repülőtéri időjárás"}
+                  </strong>
+                  <div className="plain-weather-metrics">
+                    <div className="temperature"><span>HŐMÉRSÉKLET</span><strong>{targetWeather ? `${fmt(targetWeather.temperatureC, 1)} °C` : "—"}</strong><small>{targetWeather?.apparentTemperatureC == null ? "nincs hőérzetadat" : `hőérzet ${fmt(targetWeather.apparentTemperatureC, 1)} °C`}</small></div>
+                    <div className="wind"><span>SZÉL</span><strong>{forecastWind.value}</strong><small>{forecastWind.detail}</small></div>
+                    <div className="visibility"><span>LÁTÓTÁVOLSÁG</span><strong>{forecastVisibility.value}</strong><small>{forecastVisibility.detail}</small></div>
+                    <div className="precipitation"><span>CSAPADÉK</span><strong>{targetWeather?.precipitationMm == null ? forecastPhenomenon : `${fmt(targetWeather.precipitationMm, 1)} mm`}</strong><small>{targetWeather?.precipitationProbabilityPct == null ? forecastPhenomenon : `${fmt(targetWeather.precipitationProbabilityPct)}% esély az adott órában`}</small></div>
                   </div>
-                )}
-                {targetTemperature && <small className="target-temperature-source">{targetTemperature.source} · {budapestDateTime(targetTemperature.validAt)} · CET</small>}
-              </>
-            ) : (
-              <p className="airport-weather-state">A TAF érvényes, de az adott időponthoz nincs külön előrejelzési szakasz.</p>
-            )}
+                  {conditionalPeriods.length > 0 && (
+                    <div className="plain-weather-risk" role="note">
+                      <span>LEHETSÉGES ÁTMENETI VÁLTOZÁS</span>
+                      {conditionalPeriods.map((period, index) => (
+                        <strong key={`${period.from}-${period.change}-${period.probability}-${index}`}>
+                          {friendlyConditional(period)}
+                        </strong>
+                      ))}
+                      <small>A százalék azt mutatja, mekkora az esélye ennek az átmeneti jelenségnek. Nem jelenti azt, hogy biztosan bekövetkezik.</small>
+                    </div>
+                  )}
+                  {targetWeather && <small className="target-temperature-source">{targetWeather.source} · {budapestDateTime(targetWeather.validAt)} · CET</small>}
+                </>
+              ) : (
+                <p className="airport-weather-state">Az előrejelzés érvényes, de az adott időponthoz nincs külön szakasz.</p>
+              )}
             </section>
           )}
-          {(current?.raw || forecast?.raw) && (
-            <details className="raw-aviation-weather">
-              <summary>Eredeti METAR / TAF</summary>
-              {current?.raw && <code>{current.raw}</code>}
-              {forecast?.raw && <code>{forecast.raw}</code>}
+
+          {(current || forecast) && (
+            <details className="professional-weather-details">
+              <summary>Repülésmeteorológiai részletek <span>METAR / TAF</span></summary>
+              <div className="professional-weather-body">
+                {current && (
+                  <section>
+                    <h4>Aktuális METAR</h4>
+                    <strong>{flightCategoryLabel(current.flightCategory)}</strong>
+                    <dl>
+                      <div><dt>Szél</dt><dd>{airportWind(current.windDirectionDeg, current.windVariable, current.windSpeedKt)}</dd></div>
+                      <div><dt>Látástávolság</dt><dd>{current.visibility ? `${current.visibility} SM` : "—"}</dd></div>
+                      <div><dt>QNH</dt><dd>{current.pressureHpa == null ? "—" : `${Math.round(current.pressureHpa)} hPa`}</dd></div>
+                      <div><dt>Harmatpont</dt><dd>{current.dewpointC == null ? "—" : `${current.dewpointC} °C`}</dd></div>
+                      <div><dt>Felhőzet</dt><dd>{cloudText(current.clouds, current.cloudSummary || "—")}</dd></div>
+                    </dl>
+                    {current.raw && <code>{current.raw}</code>}
+                  </section>
+                )}
+                {forecast && targetPeriod && (
+                  <section>
+                    <h4>Célidőpontra illesztett TAF</h4>
+                    <dl>
+                      <div><dt>Változás</dt><dd>{targetPeriod.change || "alapidőszak"}</dd></div>
+                      <div><dt>Időjáráskód</dt><dd>{targetPeriod.weather || "—"}</dd></div>
+                      <div><dt>Szél</dt><dd>{airportWind(targetPeriod.windDirectionDeg, targetPeriod.windVariable, targetPeriod.windSpeedKt, targetPeriod.windGustKt)}</dd></div>
+                      <div><dt>Látástávolság</dt><dd>{targetPeriod.visibility ? `${targetPeriod.visibility} SM` : "—"}</dd></div>
+                      <div><dt>Felhőzet</dt><dd>{cloudText(targetPeriod.clouds)}</dd></div>
+                    </dl>
+                    {conditionalPeriods.length > 0 && (
+                      <div className="professional-conditional-periods">
+                        <b>Feltételes TAF-szakaszok</b>
+                        {conditionalPeriods.map((period, index) => (
+                          <code key={`${period.from}-${index}`}>{[period.change, period.probability == null ? null : `PROB${period.probability}`, period.weather, airportWind(period.windDirectionDeg, period.windVariable, period.windSpeedKt, period.windGustKt)].filter(Boolean).join(" · ")}</code>
+                        ))}
+                      </div>
+                    )}
+                    {forecast.raw && <code>{forecast.raw}</code>}
+                  </section>
+                )}
+              </div>
             </details>
           )}
         </>
@@ -1644,7 +1749,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608040834</small>
+          <small className="app-version">202608041245</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>

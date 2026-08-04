@@ -7,6 +7,8 @@ const payload = {
     time: ["2026-08-03T12:00", "2026-08-03T13:00", "2026-08-03T14:00"],
     temperature_2m: [20, 21.2, 22],
     apparent_temperature: [19, 20.4, 21],
+    precipitation: [0, 0.6, 1.2],
+    precipitation_probability: [5, 35, 60],
   },
 };
 
@@ -16,6 +18,8 @@ test("nearest hourly temperature is selected and source remains explicit", () =>
     validAt: "2026-08-03T13:00:00.000Z",
     temperatureC: 21.2,
     apparentTemperatureC: 20.4,
+    precipitationMm: 0.6,
+    precipitationProbabilityPct: 35,
     source: "Open-Meteo órás előrejelzés",
   });
 });

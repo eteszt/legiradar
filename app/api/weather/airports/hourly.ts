@@ -2,6 +2,8 @@ export type HourlyWeatherPoint = {
   validAt: string;
   temperatureC: number;
   apparentTemperatureC: number | null;
+  precipitationMm: number | null;
+  precipitationProbabilityPct: number | null;
   source: "Open-Meteo órás előrejelzés";
 };
 
@@ -10,6 +12,8 @@ type OpenMeteoPayload = {
     time?: string[];
     temperature_2m?: Array<number | null>;
     apparent_temperature?: Array<number | null>;
+    precipitation?: Array<number | null>;
+    precipitation_probability?: Array<number | null>;
   };
 };
 
@@ -37,10 +41,14 @@ export function selectNearestHourlyWeather(
   }
   if (!best || best.distance > maxDistanceMinutes * 60_000) return null;
   const apparentValue = apparent[best.index];
+  const precipitationValue = payload.hourly?.precipitation?.[best.index];
+  const precipitationProbabilityValue = payload.hourly?.precipitation_probability?.[best.index];
   return {
     validAt: new Date(best.timeMs).toISOString(),
     temperatureC: temperatures[best.index] as number,
     apparentTemperatureC: typeof apparentValue === "number" && Number.isFinite(apparentValue) ? apparentValue : null,
+    precipitationMm: typeof precipitationValue === "number" && Number.isFinite(precipitationValue) ? precipitationValue : null,
+    precipitationProbabilityPct: typeof precipitationProbabilityValue === "number" && Number.isFinite(precipitationProbabilityValue) ? precipitationProbabilityValue : null,
     source: "Open-Meteo órás előrejelzés",
   };
 }
@@ -53,7 +61,7 @@ export async function fetchHourlyWeather(
   const params = new URLSearchParams({
     latitude: String(latitude),
     longitude: String(longitude),
-    hourly: "temperature_2m,apparent_temperature",
+    hourly: "temperature_2m,apparent_temperature,precipitation,precipitation_probability",
     timezone: "UTC",
     forecast_days: "3",
     past_days: "1",
