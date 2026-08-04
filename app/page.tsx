@@ -923,7 +923,7 @@ function AirportWeatherCard({
                     <div className="temperature"><span>HŐMÉRSÉKLET</span><strong>{targetWeather ? `${fmt(targetWeather.temperatureC, 1)} °C` : "—"}</strong><small>{targetWeather?.apparentTemperatureC == null ? "nincs hőérzetadat" : `hőérzet ${fmt(targetWeather.apparentTemperatureC, 1)} °C`}</small></div>
                     <div className="wind"><span>SZÉL</span><strong>{forecastWind.value}</strong><small>{forecastWind.detail}</small></div>
                     <div className="visibility"><span>LÁTÓTÁVOLSÁG</span><strong>{forecastVisibility.value}</strong><small>{forecastVisibility.detail}</small></div>
-                    <div className="precipitation"><span>CSAPADÉK</span><strong>{targetWeather?.precipitationMm == null ? forecastPhenomenon : `${fmt(targetWeather.precipitationMm, 1)} mm`}</strong><small>{targetWeather?.precipitationProbabilityPct == null ? forecastPhenomenon : `${fmt(targetWeather.precipitationProbabilityPct)}% esély az adott órában`}</small></div>
+                    <div className="precipitation"><span>CSAPADÉK</span><strong>{targetWeather?.precipitationMm == null ? forecastPhenomenon : `${fmt(targetWeather.precipitationMm, 1)} mm`}</strong><small>{targetWeather?.precipitationProbabilityPct == null ? "nincs mennyiségi valószínűség" : <><b className="precipitation-chance">{fmt(targetWeather.precipitationProbabilityPct)}% esély</b> az adott órában</>}</small></div>
                   </div>
                   {conditionalPeriods.length > 0 && (
                     <div className="plain-weather-risk" role="note">
@@ -1749,7 +1749,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608041245</small>
+          <small className="app-version">202608041254</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>

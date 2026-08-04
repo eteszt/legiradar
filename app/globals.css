@@ -726,11 +726,11 @@ button:focus-visible, input:focus-visible {
 .airport-weather-floating::before { content: ""; position: absolute; top: -7px; width: 12px; height: 12px; border-top: 1px solid rgba(91, 185, 214, .54); border-left: 1px solid rgba(91, 185, 214, .54); background: #071521; transform: rotate(45deg); }
 .airport-weather-popover.origin .airport-weather-floating::before { left: 38%; }
 .airport-weather-popover.destination .airport-weather-floating::before { right: 25px; }
-.airport-weather-close { position: absolute; z-index: 2; top: 9px; right: 10px; width: 32px; height: 32px; border: 1px solid rgba(117, 158, 179, .34); border-radius: 50%; background: rgba(3, 11, 18, .8); color: #d7e7ee; font-size: 1.3rem; line-height: 1; cursor: pointer; }
+.airport-weather-close { position: absolute; z-index: 2; top: 11px; right: 12px; width: 34px; height: 34px; border: 1px solid rgba(117, 158, 179, .55); border-radius: 50%; background: #07131d; color: #eefaff; font-size: 1.25rem; line-height: 1; cursor: pointer; }
 .airport-weather-close:hover, .airport-weather-close:focus-visible { outline: none; border-color: var(--cyan); color: white; }
 .airport-weather-source { display: block; padding: 6px 10px 5px; color: #8097a4; font-size: .58rem; line-height: 1.3; }
 .airport-weather-card { overflow: hidden; border: 1px solid rgba(80, 134, 163, .34); border-radius: 12px; background: linear-gradient(155deg, rgba(13, 35, 50, .92), rgba(5, 14, 23, .97)); }
-.airport-weather-card > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 11px 13px 10px; border-bottom: 1px solid rgba(80, 134, 163, .24); }
+.airport-weather-card > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 11px 55px 10px 13px; border-bottom: 1px solid rgba(80, 134, 163, .24); }
 .airport-weather-card header span, .airport-weather-section-title span { color: var(--cyan); font-size: .63rem; font-weight: 900; letter-spacing: .12em; }
 .airport-weather-card h3 { margin: 2px 0 0; color: white; font-size: 1.28rem; line-height: 1.08; }
 .airport-weather-card h3 small { color: #9ab0bc; font-size: .75rem; font-weight: 800; }
@@ -742,7 +742,7 @@ button:focus-visible, input:focus-visible {
 .airport-current-weather, .airport-forecast-weather { padding: 10px 13px; }
 .airport-forecast-weather { border-top: 1px solid rgba(80, 134, 163, .2); background: rgba(3, 11, 18, .32); }
 .airport-weather-section-title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
-.airport-weather-section-title small { color: #91a7b2; font-size: .62rem; font-weight: 650; text-align: right; }
+.airport-weather-section-title small { color: #b7cbd4; font-size: .68rem; font-weight: 700; text-align: right; }
 .airport-condition-summary { display: block; margin-bottom: 7px; color: #f1f9fc; font-size: .84rem; line-height: 1.25; }
 .airport-weather-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .airport-weather-metrics.forecast { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -781,13 +781,14 @@ button:focus-visible, input:focus-visible {
 .plain-weather-metrics span { display: block; margin-bottom: 4px; color: #8eabb8; font-size: .56rem; font-weight: 900; letter-spacing: .095em; }
 .plain-weather-metrics strong { display: block; position: relative; z-index: 1; color: #fff; font-size: clamp(1.15rem, 3.2vw, 1.48rem); font-weight: 850; line-height: 1.08; letter-spacing: -.025em; overflow-wrap: anywhere; }
 .plain-weather-metrics .precipitation strong { font-size: clamp(.92rem, 2.7vw, 1.22rem); line-height: 1.14; }
-.plain-weather-metrics small { display: block; position: relative; z-index: 1; margin-top: 5px; color: #a7bbc5; font-size: .62rem; line-height: 1.25; }
+.plain-weather-metrics small { display: block; position: relative; z-index: 1; margin-top: 5px; color: #bfd0d7; font-size: .68rem; line-height: 1.3; }
+.precipitation-chance { display: inline; margin-right: 3px; color: #81e5ef; font-size: .82rem; font-weight: 900; }
 .plain-weather-risk { display: grid; gap: 4px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255, 184, 77, .45); border-radius: 9px; background: rgba(255, 157, 45, .09); }
 .plain-weather-risk > span { color: #ffca72; font-size: .57rem; font-weight: 900; letter-spacing: .09em; }
 .plain-weather-risk > strong { color: #ffe5b8; font-size: .78rem; line-height: 1.3; }
-.plain-weather-risk > small { color: #ccb990; font-size: .62rem; line-height: 1.35; }
-.professional-weather-details { margin: 0 13px 11px; border: 1px solid rgba(80, 134, 163, .26); border-radius: 9px; background: rgba(1, 8, 14, .35); }
-.professional-weather-details > summary { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 11px; cursor: pointer; color: #c3d5dd; font-size: .68rem; font-weight: 850; list-style: none; }
+.plain-weather-risk > small { color: #ead5a9; font-size: .68rem; line-height: 1.4; }
+.professional-weather-details { margin: 0 13px 11px; border: 1px solid rgba(69, 183, 207, .42); border-radius: 9px; background: rgba(7, 26, 38, .62); }
+.professional-weather-details > summary { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 12px; cursor: pointer; color: #e1f2f7; font-size: .74rem; font-weight: 850; list-style: none; }
 .professional-weather-details > summary::-webkit-details-marker { display: none; }
 .professional-weather-details > summary::before { content: "＋"; color: var(--cyan); font-size: .82rem; }
 .professional-weather-details[open] > summary::before { content: "−"; }
