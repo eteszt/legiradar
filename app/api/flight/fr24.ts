@@ -125,7 +125,7 @@ async function fetchTextViaCurl(url: string, extraHeaders: Record<string, string
   return stdout;
 }
 
-async function fetchJson(url: string, attempts = 2): Promise<unknown> {
+async function fetchJson(url: string, attempts = 2, curlFallback = true): Promise<unknown> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -140,6 +140,9 @@ async function fetchJson(url: string, attempts = 2): Promise<unknown> {
       lastError = error;
       if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, attempt * 400));
     }
+  }
+  if (!curlFallback) {
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
   try {
     return await fetchJsonViaCurl(url);
@@ -519,7 +522,7 @@ async function resolveScheduleQueries(wanted: string[]) {
   for (const identifier of wanted.slice(0, 4)) {
     try {
       const params = new URLSearchParams({ query: identifier, limit: "50" });
-      const payload = await fetchJson(`https://www.flightradar24.com/v1/search/web/find?${params}`, 1);
+      const payload = await fetchJson(`https://www.flightradar24.com/v1/search/web/find?${params}`, 1, false);
       const resolved = scheduleQueriesFromSearch(payload, wanted);
       if (resolved.length > 0) return resolved;
     } catch {
@@ -545,7 +548,7 @@ export async function findNext24hSchedule(
   for (const query of queries) {
     try {
       const params = new URLSearchParams({ query, fetchBy: "flight", page: "1", limit: "100" });
-      const payload = await fetchJson(`https://api.flightradar24.com/common/v1/flight/list.json?${params}`, 1);
+      const payload = await fetchJson(`https://api.flightradar24.com/common/v1/flight/list.json?${params}`, 1, false);
       const data = nested(payload, "result", "response", "data");
       const occurrences = Array.isArray(data)
         ? data.map(mapScheduleItem).filter((item): item is Fr24ScheduleOccurrence => item != null)
@@ -554,14 +557,7 @@ export async function findNext24hSchedule(
       if (selected) return selected;
     } catch {
       // A JSON lista Railwayről időnként 429-et kap. Ilyenkor ugyanazon pontos
-      // kereskedelmi azonosító nyilvános, dátumozott járatoldalát olvassuk.
-    }
-    try {
-      const html = await fetchText(`https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`, 1);
-      const selected = selectNext24hOccurrence(mapSchedulePageRows(html, query), selectionIdentifiers, now);
-      if (selected) return selected;
-    } catch {
-      // A közvetlen FR24 oldal is lehet IP-alapon blokkolt.
+      // kereskedelmi azonosító Jina által renderelt, dátumozott tábláját olvassuk.
     }
     try {
       const readerUrl = `https://r.jina.ai/https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`;
@@ -571,6 +567,13 @@ export async function findNext24hSchedule(
         selectionIdentifiers,
         now,
       );
+      if (selected) return selected;
+    } catch {
+      // A Jina Reader átmeneti hibája esetén a közvetlen nyilvános oldalt próbáljuk.
+    }
+    try {
+      const html = await fetchText(`https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`, 1);
+      const selected = selectNext24hOccurrence(mapSchedulePageRows(html, query), selectionIdentifiers, now);
       if (selected) return selected;
     } catch {
       // A következő, pontosan feloldott kereskedelmi azonosítót is megpróbáljuk.
