@@ -162,39 +162,6 @@ async function fetchProvider(baseUrl: string, selector: "callsign" | "hex" | "re
   return aircraft;
 }
 
-async function fetchOpenSkyByHex(hex: string): Promise<AdsbAircraft> {
-  const normalized = hex.toLowerCase().replace(/[^a-f0-9]/g, "");
-  if (!/^[a-f0-9]{6}$/.test(normalized)) throw new Error("Érvénytelen ICAO24 azonosító.");
-  const response = await fetch(`https://opensky-network.org/api/states/all?icao24=${normalized}`, {
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-    signal: AbortSignal.timeout(6500),
-  });
-  if (!response.ok) throw new Error(`OpenSky: HTTP ${response.status}`);
-  const payload = (await response.json()) as { states?: unknown[][] | null };
-  const state = payload.states?.[0];
-  if (!state || number(state[5]) == null || number(state[6]) == null) {
-    throw new Error("OpenSky: nincs friss pozíció.");
-  }
-  const altitudeM = number(state[7]);
-  const speedMs = number(state[9]);
-  const verticalRateMs = number(state[11]);
-  return {
-    hex: normalized,
-    flight: typeof state[1] === "string" ? state[1].trim() : "",
-    lon: state[5],
-    lat: state[6],
-    alt_baro: state[8] === true ? "ground" : altitudeM == null ? null : altitudeM / 0.3048,
-    gs: speedMs == null ? null : speedMs * 1.943844,
-    track: state[10],
-    baro_rate: verticalRateMs == null ? null : verticalRateMs / 0.00508,
-    squawk: state[14],
-    category: state[17],
-    seen: number(state[4]) == null ? null : Math.max(0, Date.now() / 1000 - Number(state[4])),
-    seen_pos: number(state[3]) == null ? null : Math.max(0, Date.now() / 1000 - Number(state[3])),
-  };
-}
-
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const radius = 6371;
   const toRad = (value: number) => (value * Math.PI) / 180;
@@ -1130,43 +1097,10 @@ export async function GET(request: NextRequest) {
     }
 
     if (schedule) {
-      const identifiers = [
-        schedule.aircraft.icao24 ? { selector: "hex" as const, value: schedule.aircraft.icao24 } : null,
-        schedule.aircraft.registration ? { selector: "reg" as const, value: schedule.aircraft.registration } : null,
-      ].filter((item): item is { selector: "hex" | "reg"; value: string } => item != null);
-      const identityRequests: Promise<{ aircraft: AdsbAircraft; label: string }>[] = identifiers.flatMap(
-        (identifier) => communityProviders.map(async (provider) => ({
-          aircraft: await fetchProvider(provider.baseUrl, identifier.selector, identifier.value),
-          label: provider.label,
-        })),
-      );
-      if (schedule.aircraft.icao24) {
-        identityRequests.push(fetchOpenSkyByHex(schedule.aircraft.icao24).then((aircraft) => ({
-          aircraft,
-          label: "OpenSky",
-        })));
-      }
-      if (identityRequests.length) {
-        try {
-          const found = await Promise.any(identityRequests);
-          const data = shape(
-            found.aircraft,
-            schedule.flight || resolved.flightNumber || flight,
-            `${found.label} · repülőgép-azonosító alapján`,
-            scheduledRoute,
-            schedule,
-          );
-          if (data) {
-            return liveResponse(flight, {
-              data,
-              searchedCallsigns: candidates,
-              resolvedAirlineIcao: resolved.resolvedAirlineIcao,
-            });
-          }
-        } catch {
-          // Egyik repülőgép-azonosító alapú tartalékforrás sem adott friss pozíciót.
-        }
-      }
+      return NextResponse.json({
+        scheduled: { ...schedule, route: scheduledRoute },
+        searchedCallsigns: candidates,
+      });
     }
   } catch {
     // A szokásos, részletes hibaüzenet következik.

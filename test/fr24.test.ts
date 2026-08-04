@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isExactLiveCandidate,
   mapScheduleItem,
+  mapScheduleMarkdownRows,
   mapSchedulePageRows,
   mapTargetedAirborneDetail,
   scheduleQueriesFromSearch,
@@ -139,4 +140,29 @@ test("FR24 public flight page maps exact dated schedule rows", () => {
   assert.equal(rows[0].origin?.iata, "AUA");
   assert.equal(rows[0].destination?.iata, "MIA");
   assert.match(rows[0].status, /estimated/i);
+});
+
+test("Jina Markdown schedule rows use airport-local time zones for AA1028 and AA128", () => {
+  const markdown = `
+| FLIGHTS HISTORY |  | DATE | FROM | TO | AIRCRAFT | FLIGHT TIME | STD | ATD | STA |  | STATUS |  |  |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| N982NN 04 Aug 2026 |  | 04 Aug 2026 | Miami [(MIA)](https://www.flightradar24.com/data/airports/mia) | Oranjestad [(AUA)](https://www.flightradar24.com/data/airports/aua) | B738 [(N982NN)](https://www.flightradar24.com/data/aircraft/n982nn) | — | 10:25 AM | — | 1:34 PM |  | Estimated departure 10:25 AM |  |  |
+`;
+  const [aa1028] = mapScheduleMarkdownRows(markdown, "AA1028");
+  assert.equal(aa1028.departureAt, "2026-08-04T14:25:00.000Z");
+  assert.equal(aa1028.arrivalAt, "2026-08-04T17:34:00.000Z");
+  assert.equal(aa1028.origin?.icao, "KMIA");
+  assert.equal(aa1028.destination?.icao, "TNCA");
+  assert.equal(aa1028.registration, "N982NN");
+
+  const aa128Markdown = `
+| N821AN 04 Aug 2026 |  | 04 Aug 2026 | Shanghai [(PVG)](https://www.flightradar24.com/data/airports/pvg) | Dallas [(DFW)](https://www.flightradar24.com/data/airports/dfw) | B789 [(N821AN)](https://www.flightradar24.com/data/aircraft/n821an) | — | 5:20 PM | — | 6:20 PM |  | Estimated departure 5:20 PM |  |  |
+`;
+  const rows = mapScheduleMarkdownRows(aa128Markdown, "AA128");
+  assert.equal(rows[0].departureAt, "2026-08-04T09:20:00.000Z");
+  assert.equal(rows[0].arrivalAt, "2026-08-04T23:20:00.000Z");
+  assert.equal(
+    selectNext24hOccurrence(rows, ["AA128", "AAL128"], Date.parse("2026-08-04T06:00:00Z"))?.flight,
+    "AA128",
+  );
 });

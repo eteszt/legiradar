@@ -1,5 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import airportCodes from "@nwpr/airport-codes";
+
+const airports = Array.isArray(airportCodes)
+  ? airportCodes
+  : (airportCodes as unknown as { airports: typeof airportCodes }).airports;
 
 const execFileAsync = promisify(execFile);
 const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -360,6 +365,116 @@ export function mapSchedulePageRows(html: string, flight: string): Fr24ScheduleO
   return rows;
 }
 
+const MONTH_INDEX: Record<string, number> = {
+  Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+  Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+};
+
+function markdownAirport(value: string): Fr24Airport | null {
+  const iata = value.match(/\/data\/airports\/([a-z0-9]{3})/i)?.[1]?.toUpperCase();
+  if (!iata) return null;
+  const data = airports.find((item) => item.iata === iata);
+  return {
+    iata,
+    icao: data?.icao || null,
+    name: data?.name || null,
+    city: data?.city || null,
+    country: data?.country || null,
+    lat: finiteNumber(data?.latitude),
+    lon: finiteNumber(data?.longitude),
+  };
+}
+
+function localTimeParts(value: string) {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return null;
+  let hour = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === "PM") hour += 12;
+  return { hour, minute: Number(match[2]) };
+}
+
+function airportLocalIso(date: string, time: string, iata: string) {
+  const dateMatch = date.trim().match(/^(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})$/);
+  const clock = localTimeParts(time);
+  const data = airports.find((item) => item.iata === iata);
+  const month = dateMatch ? MONTH_INDEX[dateMatch[2]] : undefined;
+  if (!dateMatch || !clock || month == null || !data) return null;
+  const wanted = {
+    year: Number(dateMatch[3]), month, day: Number(dateMatch[1]),
+    hour: clock.hour, minute: clock.minute,
+  };
+  const wantedAsUtc = Date.UTC(wanted.year, wanted.month, wanted.day, wanted.hour, wanted.minute);
+  if (!data.tz) {
+    const offsetHours = finiteNumber(data.timezone);
+    return new Date(wantedAsUtc - (offsetHours || 0) * 60 * 60_000).toISOString();
+  }
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: data.tz,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    });
+    let guess = wantedAsUtc;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const parts = Object.fromEntries(
+        formatter.formatToParts(new Date(guess))
+          .filter((part) => part.type !== "literal")
+          .map((part) => [part.type, Number(part.value)]),
+      ) as Record<string, number>;
+      const representedAsUtc = Date.UTC(
+        parts.year, parts.month - 1, parts.day, parts.hour, parts.minute,
+      );
+      guess += wantedAsUtc - representedAsUtc;
+    }
+    return new Date(guess).toISOString();
+  } catch {
+    const offsetHours = finiteNumber(data.timezone);
+    return new Date(wantedAsUtc - (offsetHours || 0) * 60 * 60_000).toISOString();
+  }
+}
+
+/** Parse the rendered FR24 history table returned by Jina Reader as Markdown. */
+export function mapScheduleMarkdownRows(markdown: string, flight: string): Fr24ScheduleOccurrence[] {
+  const normalizedFlight = normalizeFlightIdentifier(flight);
+  const rows: Fr24ScheduleOccurrence[] = [];
+  for (const line of markdown.split(/\r?\n/)) {
+    if (!line.startsWith("|") || /^\|\s*-+/.test(line)) continue;
+    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+    if (cells.length < 12) continue;
+    const origin = markdownAirport(cells[3]);
+    const destination = markdownAirport(cells[4]);
+    if (!origin?.iata || !destination?.iata) continue;
+    const departureAt = airportLocalIso(cells[2], cells[7], origin.iata);
+    let arrivalAt = airportLocalIso(cells[2], cells[9], destination.iata);
+    if (!departureAt) continue;
+    if (arrivalAt && Date.parse(arrivalAt) <= Date.parse(departureAt)) {
+      arrivalAt = new Date(Date.parse(arrivalAt) + 24 * 60 * 60_000).toISOString();
+    }
+    const aircraftType = cells[5].match(/^([A-Z0-9]{3,4})\b/)?.[1] || null;
+    const registration = cells[5].match(/\[\(([A-Z0-9-]+)\)\]/i)?.[1] || null;
+    const status = cells[11] || "scheduled";
+    rows.push({
+      flight: normalizedFlight,
+      callsign: null,
+      status,
+      departureAt,
+      estimatedDepartureAt: /estimated/i.test(status) ? departureAt : null,
+      actualDepartureAt: cells[8] && cells[8] !== "—"
+        ? airportLocalIso(cells[2], cells[8], origin.iata)
+        : null,
+      arrivalAt,
+      estimatedArrivalAt: null,
+      actualArrivalAt: null,
+      origin,
+      destination,
+      registration,
+      aircraftType,
+      hex: null,
+    });
+  }
+  return rows;
+}
+
 export function selectNext24hOccurrence(
   occurrences: Fr24ScheduleOccurrence[],
   identifiers: string[],
@@ -450,8 +565,12 @@ export async function findNext24hSchedule(
     }
     try {
       const readerUrl = `https://r.jina.ai/https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`;
-      const html = await fetchText(readerUrl, 1, { "X-Return-Format": "html" });
-      const selected = selectNext24hOccurrence(mapSchedulePageRows(html, query), selectionIdentifiers, now);
+      const markdown = await fetchText(readerUrl, 1);
+      const selected = selectNext24hOccurrence(
+        mapScheduleMarkdownRows(markdown, query),
+        selectionIdentifiers,
+        now,
+      );
       if (selected) return selected;
     } catch {
       // A következő, pontosan feloldott kereskedelmi azonosítót is megpróbáljuk.
