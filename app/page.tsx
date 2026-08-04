@@ -631,26 +631,10 @@ function FlightConditionsPanel({
   );
 }
 
-function flightCategoryLabel(category: string | null) {
-  if (category === "VFR") return "VFR · jó látási körülmények";
-  if (category === "MVFR") return "MVFR · korlátozott látási körülmények";
-  if (category === "IFR") return "IFR · műszeres körülmények";
-  if (category === "LIFR") return "LIFR · nagyon korlátozott körülmények";
-  return category || "Nincs kategóriaadat";
-}
-
 function airportWind(direction: number | null, variable: boolean, speed: number | null, gust: number | null = null) {
   if (speed == null) return "—";
   const heading = variable ? "változó" : direction == null ? "—" : `${Math.round(direction)}°`;
   return `${heading} · ${Math.round(speed)} kt${gust == null ? "" : `, lökés ${Math.round(gust)} kt`} · ${Math.round(speed * 1.852)} km/h`;
-}
-
-function plainFlightCategory(category: string | null) {
-  if (category === "VFR") return { badge: "JÓ", summary: "Jó látási és repülési körülmények" };
-  if (category === "MVFR") return { badge: "KORLÁTOZOTT", summary: "Korlátozott látási vagy felhőzeti körülmények" };
-  if (category === "IFR") return { badge: "GYENGE", summary: "Kedvezőtlen látási vagy felhőzeti körülmények" };
-  if (category === "LIFR") return { badge: "NAGYON GYENGE", summary: "Nagyon kedvezőtlen repülőtéri körülmények" };
-  return { badge: "NINCS ADAT", summary: "A repülési kategória nem érhető el" };
 }
 
 function metricWind(direction: number | null, variable: boolean, speedKt: number | null, gustKt: number | null = null) {
@@ -683,11 +667,6 @@ function aviationPhenomenon(code: string | null | undefined) {
   if (value.includes("SN")) return `${intensity}havazás`;
   if (value.includes("GR") || value.includes("GS")) return `${intensity}jégeső`;
   return null;
-}
-
-function phenomenonFromMetar(raw: string | null | undefined) {
-  if (!raw) return null;
-  return aviationPhenomenon(raw.split(/\s+/).find((token) => /(?:TS|SH|FZ)?(?:RA|DZ|SN|GR|GS)/i.test(token)));
 }
 
 function friendlyConditional(period: AirportForecastPeriod) {
@@ -762,18 +741,6 @@ function airportLandingAlert(weather: AirportWeather | null, targetAt: string | 
     if (lowest != null && lowest <= 500) add("danger", "ALACSONY FELHŐ", `${source}: ${lowest} ft felhőalap`);
     else if (lowest != null && lowest <= 1000) add("warning", "ALACSONY FELHŐ", `${source}: ${lowest} ft felhőalap`);
   };
-
-  const current = weather.current;
-  if (current) {
-    const rawGust = current.raw?.match(/\b(?:VRB|\d{3})\d{2,3}G(\d{2,3})KT\b/i);
-    const gustKt = rawGust ? Number(rawGust[1]) : null;
-    if (current.flightCategory === "LIFR") add("danger", "LIFR", "aktuális METAR: LIFR körülmények");
-    else if (current.flightCategory === "IFR") add("warning", "IFR", "aktuális METAR: IFR körülmények");
-    weatherCodes(current.raw, "aktuális METAR");
-    wind(current.windSpeedKt, gustKt, "aktuális METAR");
-    visibility(current.visibility, "aktuális METAR");
-    ceiling(current.clouds, "aktuális METAR");
-  }
 
   const targetMs = targetAt ? Date.parse(targetAt) : Number.NaN;
   const forecast = weather.forecast;
@@ -852,13 +819,7 @@ function AirportWeatherCard({
   const conditionalPeriods = matchingPeriods.filter((period) =>
     period !== targetPeriod && (period.probability != null || period.change === "TEMPO"),
   );
-  const current = weather?.current || null;
   const targetWeather = weather?.targetTemperature || null;
-  const categoryClass = current?.flightCategory?.toLowerCase() || "unknown";
-  const category = plainFlightCategory(current?.flightCategory || null);
-  const currentWind = metricWind(current?.windDirectionDeg ?? null, current?.windVariable || false, current?.windSpeedKt ?? null);
-  const currentVisibility = metricVisibility(current?.visibility || null);
-  const currentPrecipitation = phenomenonFromMetar(current?.raw) || "Nincs jelzett csapadék";
   const forecastWind = metricWind(
     targetPeriod?.windDirectionDeg ?? null,
     targetPeriod?.windVariable || false,
@@ -876,7 +837,6 @@ function AirportWeatherCard({
           <h3>{airport.iata} <small>{airport.icao}</small></h3>
           <p>{airport.city} · {weather?.name || airport.name}</p>
         </div>
-        {current && <b className={`flight-category ${categoryClass}`}>{category.badge}</b>}
       </header>
       {loading ? (
         <p className="airport-weather-state">Időjárási adatok betöltése…</p>
@@ -886,28 +846,10 @@ function AirportWeatherCard({
         <p className="airport-weather-state">Ehhez a repülőtérhez nem érkezett időjárási adat.</p>
       ) : (
         <>
-          <section className="airport-current-weather plain-weather-section">
-            <div className="airport-weather-section-title">
-              <span>MOST A REPTÉREN</span>
-              <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} · CET` : "nincs aktuális mérés"}</small>
-            </div>
-            {current ? (
-              <>
-                <strong className="airport-condition-summary plain">{category.summary}</strong>
-                <div className="plain-weather-metrics">
-                  <div className="temperature"><span>HŐMÉRSÉKLET</span><strong>{current.temperatureC == null ? "—" : `${fmt(current.temperatureC)} °C`}</strong><small>aktuális mérés</small></div>
-                  <div className="wind"><span>SZÉL</span><strong>{currentWind.value}</strong><small>{currentWind.detail}</small></div>
-                  <div className="visibility"><span>LÁTÓTÁVOLSÁG</span><strong>{currentVisibility.value}</strong><small>{currentVisibility.detail}</small></div>
-                  <div className="precipitation"><span>CSAPADÉK</span><strong>{currentPrecipitation}</strong><small>a METAR megfigyelése alapján</small></div>
-                </div>
-              </>
-            ) : <p className="airport-weather-state">Aktuális mérés nem érhető el.</p>}
-          </section>
-
-          {forecastTargetAt && (
+          {forecastTargetAt ? (
             <section className="airport-forecast-weather plain-weather-section">
               <div className="airport-weather-section-title">
-                <span>{role === "INDULÁSI" ? "INDULÁSKOR" : "ÉRKEZÉSKOR"} VÁRHATÓ</span>
+                <span>{role === "INDULÁSI" ? "INDULÁSI" : "ÉRKEZÉSI"} IDŐPONTRA ELŐREJELZETT</span>
                 <small>{`${budapestDateTime(forecastTargetAt)} · CET`}</small>
               </div>
               {!forecast ? (
@@ -942,26 +884,14 @@ function AirportWeatherCard({
                 <p className="airport-weather-state">Az előrejelzés érvényes, de az adott időponthoz nincs külön szakasz.</p>
               )}
             </section>
+          ) : (
+            <p className="airport-weather-state">A járat időpontja nem ismert, ezért időpontra illesztett előrejelzés nem kérhető le.</p>
           )}
 
-          {(current || forecast) && (
+          {forecast && (
             <details className="professional-weather-details">
-              <summary>Repülésmeteorológiai részletek <span>METAR / TAF</span></summary>
+              <summary>Repülésmeteorológiai részletek <span>TAF</span></summary>
               <div className="professional-weather-body">
-                {current && (
-                  <section>
-                    <h4>Aktuális METAR</h4>
-                    <strong>{flightCategoryLabel(current.flightCategory)}</strong>
-                    <dl>
-                      <div><dt>Szél</dt><dd>{airportWind(current.windDirectionDeg, current.windVariable, current.windSpeedKt)}</dd></div>
-                      <div><dt>Látástávolság</dt><dd>{current.visibility ? `${current.visibility} SM` : "—"}</dd></div>
-                      <div><dt>QNH</dt><dd>{current.pressureHpa == null ? "—" : `${Math.round(current.pressureHpa)} hPa`}</dd></div>
-                      <div><dt>Harmatpont</dt><dd>{current.dewpointC == null ? "—" : `${current.dewpointC} °C`}</dd></div>
-                      <div><dt>Felhőzet</dt><dd>{cloudText(current.clouds, current.cloudSummary || "—")}</dd></div>
-                    </dl>
-                    {current.raw && <code>{current.raw}</code>}
-                  </section>
-                )}
                 {forecast && targetPeriod && (
                   <section>
                     <h4>Célidőpontra illesztett TAF</h4>
@@ -1638,7 +1568,7 @@ export default function Home() {
   const airportWeatherIds = weatherFlight
     ? `${weatherFlight.journey.origin.icao},${weatherFlight.journey.destination.icao}`
     : "";
-  const airportWeatherTargets = weatherFlight?.preflight
+  const airportWeatherTargets = weatherFlight
     ? [weatherFlight.journey.estimatedDepartureAt, weatherFlight.journey.estimatedArrivalAt]
     : [null, null];
   const airportWeatherKey = airportWeatherIds
@@ -1749,7 +1679,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608041254</small>
+          <small className="app-version">202608042219</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
