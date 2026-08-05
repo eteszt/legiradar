@@ -1138,7 +1138,7 @@ function TelemetryInstruments({ telemetry }: { telemetry: Telemetry }) {
     ? null
     : windSpeed * Math.sin(relativeWind * Math.PI / 180);
   const windLoadLabel = headwindComponent == null
-    ? "SZÉLTERHELÉS"
+    ? "SZEMBESZÉL / HÁTSZÉL"
     : headwindComponent >= 0 ? "SZEMBESZÉL" : "HÁTSZÉL";
   const crosswindLabel = crosswindComponent == null
     ? "OLDALSZÉL"
@@ -1202,18 +1202,18 @@ function TelemetryInstruments({ telemetry }: { telemetry: Telemetry }) {
               </div>
             </div>
             <div className="wind-module">
-              <div className="wind-rose" aria-label={`Szél ${fmt(windDirection)} fok felől, ${fmt(windSpeed)} kilométer per óra`}>
+              <div className={`wind-rose${windDirection == null ? " no-data" : ""}`} aria-label={windDirection == null ? "Nem érkezik és nem számítható széladat" : `Szél ${fmt(windDirection)} fok felől, ${fmt(windSpeed)} kilométer per óra`}>
                 <span className="wind-north">N</span><span className="wind-east">E</span><span className="wind-south">S</span><span className="wind-west">W</span>
                 {windDirection != null && <i className="wind-arrow" style={{ transform: `translate(-50%, -50%) rotate(${windDirection}deg)` }}>↓</i>}
-                <div><strong>{fmt(windSpeed)}</strong><small>km/h</small></div>
+                <div>{windSpeed == null ? <strong className="no-data-value">N/A</strong> : <><strong>{fmt(windSpeed)}</strong><small>km/h</small></>}</div>
               </div>
               <span className="wind-from">{windDirection == null ? "NINCS SZÉLADAT" : `${fmt(windDirection)}° FELŐL · ${windIsDerived ? "SZÁMÍTOTT" : "MÉRT"}`}</span>
             </div>
           </div>
           <div className="environment-facts">
-            <span><small>{windLoadLabel}</small><strong>{fmt(headwindComponent == null ? null : Math.abs(headwindComponent))} <i>km/h</i></strong></span>
-            <span><small>{crosswindLabel}</small><strong>{fmt(crosswindComponent == null ? null : Math.abs(crosswindComponent))} <i>km/h</i></strong></span>
-            <span><small>BEÁLLÍTOTT QNH</small><strong>{fmt(telemetry.navQnhHpa, 1)} <i>hPa</i></strong></span>
+            <span title={headwindComponent == null ? "A szélkomponenshez szélirány, szélsebesség és gépirányszög szükséges." : `${windLoadLabel.toLocaleLowerCase("hu-HU")} komponens a gép haladási irányában.`}><small>{windLoadLabel}</small><strong className={headwindComponent == null ? "no-data-value" : ""}>{headwindComponent == null ? "NINCS ADAT" : <>{fmt(Math.abs(headwindComponent))} <i>km/h</i></>}</strong></span>
+            <span title={crosswindComponent == null ? "Az oldalszélhez szélirány, szélsebesség és gépirányszög szükséges." : `${crosswindLabel.toLocaleLowerCase("hu-HU")} érkező oldalszél-komponens.`}><small>{crosswindLabel}</small><strong className={crosswindComponent == null ? "no-data-value" : ""}>{crosswindComponent == null ? "NINCS ADAT" : <>{fmt(Math.abs(crosswindComponent))} <i>km/h</i></>}</strong></span>
+            <span title="A repülőgép fedélzeti rendszerében beállított légnyomás; nem helyi meteorológiai mérés."><small>QNH · FEDÉLZETI</small><strong className={telemetry.navQnhHpa == null ? "no-data-value" : ""}>{telemetry.navQnhHpa == null ? "NEM ÉRKEZIK" : <>{fmt(telemetry.navQnhHpa, 1)} <i>hPa</i></>}</strong></span>
           </div>
         </article>
 
@@ -1972,7 +1972,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051254</small>
+          <small className="app-version">202608051442</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>

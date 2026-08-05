@@ -636,20 +636,20 @@ button:focus-visible, input:focus-visible {
 .attitude-readout small { color: var(--instrument-accent); font-size: .57rem; }
 .environment-body { height: 170px; display: grid; grid-template-columns: minmax(0, 1fr) 108px; align-items: center; gap: 13px; padding: 10px 0 6px; }
 .temperature-module { min-width: 0; height: 132px; display: grid; grid-template-columns: 25px 17px minmax(0, 1fr); align-items: center; gap: 7px; }
-.thermometer-scale { height: 112px; display: flex; flex-direction: column; justify-content: space-between; color: #657f8f; font: 700 .43rem "IBM Plex Mono", monospace; text-align: right; }
+.thermometer-scale { height: 112px; display: flex; flex-direction: column; justify-content: space-between; color: #8aa1ae; font: 750 .56rem "IBM Plex Mono", monospace; text-align: right; }
 .thermometer { position: relative; width: 17px; height: 104px; margin-bottom: 13px; border: 2px solid #567487; border-radius: 10px 10px 5px 5px; background: #06121b; box-shadow: inset 0 0 8px #000; }
 .thermometer::before { content: ""; position: absolute; left: -7px; right: -7px; top: 32%; border-top: 1px solid rgba(255,255,255,.28); }
 .thermometer::after { content: ""; position: absolute; z-index: 1; left: 50%; bottom: -13px; width: 27px; height: 27px; border: 2px solid #567487; border-radius: 50%; background: #07131c; transform: translateX(-50%); }
 .thermometer i { position: absolute; z-index: 2; inset: auto 3px 2px; border-radius: 7px; background: linear-gradient(#ffb84d, #ff6c55); box-shadow: 0 0 8px rgba(255,108,85,.5); }
 .temperature-readout { min-width: 0; display: grid; align-content: center; }
-.temperature-readout > span { color: #7f99a8; font-size: .48rem; font-weight: 900; letter-spacing: .08em; }
+.temperature-readout > span { color: #9bb0bc; font-size: .6rem; font-weight: 900; letter-spacing: .05em; line-height: 1.2; }
 .temperature-readout strong { display: flex; align-items: baseline; gap: 4px; margin-top: 2px; color: #fff; font: 800 clamp(1.25rem, 2.1vw, 1.72rem) "IBM Plex Mono", monospace; letter-spacing: -.06em; }
 .temperature-readout strong small { color: var(--instrument-accent); font-size: .42em; letter-spacing: 0; }
-.temperature-readout em { margin-top: 5px; color: #b9cbd5; font-size: .51rem; font-style: normal; line-height: 1.25; }
-.temperature-readout b { margin-top: 7px; padding-top: 6px; border-top: 1px solid #183348; color: #8fa8b8; font: 700 .56rem "IBM Plex Mono", monospace; }
+.temperature-readout em { margin-top: 5px; color: #c6d5dc; font-size: .6rem; font-style: normal; line-height: 1.28; }
+.temperature-readout b { margin-top: 7px; padding-top: 6px; border-top: 1px solid #183348; color: #a9bdc8; font: 750 .65rem "IBM Plex Mono", monospace; }
 .wind-module { min-width: 0; display: grid; justify-items: center; gap: 5px; }
 .wind-rose { position: relative; width: 102px; height: 102px; border: 6px solid #0c1b27; border-radius: 50%; outline: 1px solid #315267; background: radial-gradient(circle, #0b202e 0 44%, #06121b 45%); box-shadow: inset 0 0 18px #000, 0 6px 15px rgba(0,0,0,.3); }
-.wind-rose > span { position: absolute; z-index: 2; color: #8ba3b2; font: 900 .48rem "IBM Plex Mono", monospace; }
+.wind-rose > span { position: absolute; z-index: 2; color: #aec0ca; font: 900 .65rem "IBM Plex Mono", monospace; }
 .wind-north { top: 4px; left: 50%; color: #ff785f !important; transform: translateX(-50%); }
 .wind-east { right: 5px; top: 50%; transform: translateY(-50%); }
 .wind-south { bottom: 4px; left: 50%; transform: translateX(-50%); }
@@ -657,14 +657,16 @@ button:focus-visible, input:focus-visible {
 .wind-arrow { position: absolute; z-index: 3; left: 50%; top: 50%; width: 20px; height: 72px; color: var(--instrument-accent); font: 900 1.25rem/1 "IBM Plex Mono", monospace; text-align: center; transform-origin: 50% 50%; filter: drop-shadow(0 0 5px color-mix(in srgb, var(--instrument-accent) 65%, transparent)); }
 .wind-rose > div { position: absolute; z-index: 4; inset: 50% auto auto 50%; width: 56px; height: 38px; display: grid; place-content: center; border-radius: 6px; background: rgba(2,9,15,.88); text-align: center; transform: translate(-50%, -50%); }
 .wind-rose > div strong { color: white; font: 800 1rem/1 "IBM Plex Mono", monospace; }
-.wind-rose > div small { margin-top: 2px; color: var(--instrument-accent); font-size: .42rem; }
-.wind-from { max-width: 108px; color: #90a8b7; font: 800 .43rem/1.25 "IBM Plex Mono", monospace; letter-spacing: .035em; text-align: center; }
+.wind-rose > div small { margin-top: 2px; color: var(--instrument-accent); font-size: .56rem; }
+.wind-rose.no-data .wind-arrow { display: none; }
+.wind-from { max-width: 108px; color: #aec0ca; font: 800 .56rem/1.22 "IBM Plex Mono", monospace; letter-spacing: .015em; text-align: center; }
 .environment-facts { position: relative; z-index: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid #173144; }
-.environment-facts > span { min-width: 0; padding: 8px 6px 1px; text-align: center; }
+.environment-facts > span { min-width: 0; padding: 7px 5px 1px; text-align: center; }
 .environment-facts > span + span { border-left: 1px solid #173144; }
-.environment-facts small { display: block; overflow: hidden; color: #718d9e; font-size: .43rem; font-weight: 900; letter-spacing: .06em; text-overflow: ellipsis; white-space: nowrap; }
-.environment-facts strong { display: block; margin-top: 4px; overflow: hidden; color: #effbff; font: 800 .7rem "IBM Plex Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.environment-facts small { display: grid; min-height: 2.1em; place-content: center; color: #93aab7; font-size: .56rem; font-weight: 900; letter-spacing: .02em; line-height: 1.05; }
+.environment-facts strong { display: block; margin-top: 2px; overflow: hidden; color: #effbff; font: 800 .8rem "IBM Plex Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
 .environment-facts i { color: var(--instrument-accent); font-size: .65em; font-style: normal; }
+.environment-instrument .no-data-value { color: #78909e; font-size: .62rem; letter-spacing: .015em; }
 .signal-body { height: 194px; position: relative; display: grid; grid-template-columns: 1fr 104px; grid-template-rows: 1fr auto; align-items: center; gap: 6px 16px; padding: 23px 7px 8px; }
 .signal-bars { height: 88px; display: flex; align-items: flex-end; gap: 5px; }
 .signal-bars i { width: 10px; height: calc(18px + var(--bar, 0) * 8px); flex: 1; border-radius: 2px 2px 0 0; background: #193144; box-shadow: inset 0 0 0 1px #244357; }
