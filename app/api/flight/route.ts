@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import airlines from "airline-codes/airlines.json";
 import airports from "@nwpr/airport-codes";
 import {
+  commercialLiveIdentityQueries,
   findNext24hSchedule,
   findTargetedAirborne,
   type Fr24Airport,
@@ -1111,6 +1112,42 @@ export async function GET(request: NextRequest) {
   const cachedLive = liveFlightCache.get(flight);
   if (!scheduleOnly && cachedLive && cachedLive.freshUntil > Date.now()) {
     return NextResponse.json(cachedLive.value);
+  }
+
+  // Kereskedelmi járatszámnál a legmagasabb bizalmú első lépés egy aktuális
+  // live-flight identity rekord. Ez ugyanabban a pillanatnyi rekordban köti össze
+  // az IATA-járatszámot a tényleges operatív callsignnal és a repülőgép hexével.
+  // Csak ennek sikertelensége után képezünk statikus ICAO/callsign jelölteket.
+  const commercialIdentityQueries = commercialLiveIdentityQueries(flight);
+  if (!scheduleOnly && commercialIdentityQueries.length) {
+    try {
+      const targeted = await findTargetedAirborne(commercialIdentityQueries);
+      if (targeted) {
+        const route = routeFromTargetedLive(targeted, null);
+        const data = shape(
+          aircraftFromTargetedLive(targeted),
+          targeted.flight || flight,
+          "Flightradar24 · kereskedelmi járatszámhoz kötött aktuális live identity",
+          route,
+          scheduleFromTargetedLive(targeted),
+        );
+        if (data) {
+          return liveResponse(flight, {
+            data,
+            searchedCallsigns: Array.from(new Set([
+              targeted.callsign,
+              targeted.flight,
+              flight,
+            ].filter(Boolean))),
+            resolvedAirlineIcao: targeted.callsign?.match(/^([A-Z]{3})/)?.[1] || null,
+            matchedByCommercialLiveIdentity: true,
+          });
+        }
+      }
+    } catch {
+      // A live identity adapter hibája nem jelent tényszerű "nincs ilyen járat"
+      // eredményt; ilyenkor a korábbi, korlátozott fallback lánc folytatódik.
+    }
   }
 
   const resolved = await resolveFlightNumber(flight);

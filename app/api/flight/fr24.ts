@@ -195,6 +195,11 @@ export function isExactLiveCandidate(item: unknown, identifiers: Iterable<string
     || wanted.has(normalizeFlightIdentifier(detail.callsign));
 }
 
+export function commercialLiveIdentityQueries(input: string) {
+  const normalized = normalizeFlightIdentifier(input);
+  return /^[A-Z0-9]{2}\d{1,4}[A-Z]?$/.test(normalized) ? [normalized] : [];
+}
+
 export function mapTargetedAirborneDetail(
   rawDetail: unknown,
   rawCandidate: unknown,

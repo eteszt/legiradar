@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  commercialLiveIdentityQueries,
   isExactLiveCandidate,
   mapScheduleItem,
   mapScheduleMarkdownRows,
@@ -38,6 +39,13 @@ test("exact targeted live candidate rejects prefix and schedule rows", () => {
   assert.equal(isExactLiveCandidate({ type: "live", id: "x", detail: { flight: "DL183" } }, wanted), true);
   assert.equal(isExactLiveCandidate({ type: "live", id: "x", detail: { flight: "DL1830" } }, wanted), false);
   assert.equal(isExactLiveCandidate({ type: "schedule", id: "x", detail: { flight: "DL183" } }, wanted), false);
+});
+
+test("commercial flight numbers enter exact current identity lookup before callsign inference", () => {
+  assert.deepEqual(commercialLiveIdentityQueries(" bf-704 "), ["BF704"]);
+  assert.deepEqual(commercialLiveIdentityQueries("U21078"), ["U21078"]);
+  assert.deepEqual(commercialLiveIdentityQueries("FBU74E"), []);
+  assert.deepEqual(commercialLiveIdentityQueries("39B10B"), []);
 });
 
 test("targeted detail requires fresh, airborne, positioned telemetry", () => {
