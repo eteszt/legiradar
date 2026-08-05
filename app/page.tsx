@@ -1577,13 +1577,15 @@ function RadarMap({
             <text x={destinationPoint[0] + 12} y={destinationPoint[1] - 10}>{journey.destination.city} · {journey.destination.iata || journey.destination.icao}</text>
           </g>
         )}
-        <g className="plane-marker" transform={`translate(${current[0]} ${current[1]}) scale(${1 / zoom})`}>
-          <circle r="41" />
-          <circle r="25" />
-          <g className="plane-icon" transform={`rotate(${displayedTrack})`}>
-            <path d="M0-21 5-7 19 2 19 7 5 3 4 15 10 20 10 24 0 20-10 24-10 20-4 15-5 3-19 7-19 2-5-7Z" />
+        <g className="plane-marker" transform={`translate(${current[0]} ${current[1]})`}>
+          <g className="plane-marker-scale" transform={`scale(${1 / zoom})`}>
+            <circle r="41" />
+            <circle r="25" />
+            <g className="plane-icon" transform={`rotate(${displayedTrack})`}>
+              <path d="M0-21 5-7 19 2 19 7 5 3 4 15 10 20 10 24 0 20-10 24-10 20-4 15-5 3-19 7-19 2-5-7Z" />
+            </g>
+            <title>{`Haladási irány: ${fmt(displayedTrack)}°`}</title>
           </g>
-          <title>{`Haladási irány: ${fmt(displayedTrack)}°`}</title>
         </g>
         </g>
       </svg>
@@ -1970,7 +1972,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051240</small>
+          <small className="app-version">202608051254</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
