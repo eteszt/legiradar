@@ -798,6 +798,7 @@ button:focus-visible, input:focus-visible {
 .hazard-card-head strong { display: block; margin-top: 3px; color: #9fb4c1; font-size: .62rem; }
 .hazard-card-head > b { align-self: flex-start; padding: 4px 6px; border-radius: 5px; background: rgba(255, 184, 77, .13); color: var(--warning); font-size: .49rem; letter-spacing: .06em; }
 .hazard-card.inactive .hazard-card-head > b { background: rgba(130, 151, 164, .12); color: #9cafba; }
+.hazard-plain-summary { margin: 0; padding: 0 12px 11px; color: #dcecf3; font-size: .7rem; font-weight: 650; line-height: 1.48; }
 .hazard-route-grid { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid rgba(101, 136, 157, .18); border-bottom: 1px solid rgba(101, 136, 157, .18); }
 .hazard-route-grid > div { min-width: 0; padding: 10px 12px; }
 .hazard-route-grid > div + div { border-left: 1px solid rgba(101, 136, 157, .18); }
@@ -805,9 +806,24 @@ button:focus-visible, input:focus-visible {
 .hazard-route-grid small { display: block; margin-top: 3px; color: #7893a4; font-size: .53rem; }
 .hazard-facts { display: grid; gap: 5px; padding: 9px 12px 11px; }
 .hazard-facts span { display: flex; justify-content: space-between; gap: 8px; color: #93a9b6; font-size: .61rem; }
-.hazard-facts b { color: #dfeef5; }
+.hazard-facts b { max-width: 68%; color: #dfeef5; text-align: right; line-height: 1.35; }
 .hazard-facts .valid { display: block; margin-top: 3px; color: var(--lime); font-weight: 800; }
 .hazard-facts .expired { display: block; margin-top: 3px; color: #9cafba; font-weight: 800; }
+.hazard-details { border-top: 1px solid rgba(101, 136, 157, .2); background: rgba(2, 9, 15, .38); }
+.hazard-details > summary { display: flex; align-items: center; gap: 7px; padding: 10px 12px; cursor: pointer; color: #d9edf4; font-size: .64rem; font-weight: 850; list-style: none; }
+.hazard-details > summary::-webkit-details-marker { display: none; }
+.hazard-details > summary::before { content: "＋"; color: var(--cyan); font-size: .75rem; }
+.hazard-details[open] > summary::before { content: "−"; }
+.hazard-details > summary span { margin-left: auto; color: #748d9c; font-size: .5rem; font-weight: 750; }
+.hazard-details-body { display: grid; gap: 9px; padding: 0 12px 12px; border-top: 1px solid rgba(101, 136, 157, .14); }
+.hazard-details-body section { padding-top: 9px; }
+.hazard-details-body section + section { border-top: 1px solid rgba(101, 136, 157, .12); }
+.hazard-details-body section > span { color: var(--cyan); font-size: .51rem; font-weight: 900; letter-spacing: .09em; }
+.hazard-details-body p { margin: 4px 0 0; color: #b8cbd4; font-size: .63rem; line-height: 1.5; }
+.hazard-details-body dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 0; padding: 9px; border: 1px solid rgba(101, 136, 157, .18); border-radius: 7px; background: rgba(1, 7, 12, .38); }
+.hazard-details-body dt { color: #718a99; font-size: .49rem; font-weight: 850; text-transform: uppercase; }
+.hazard-details-body dd { margin: 3px 0 0; color: #d6e5eb; font-size: .59rem; line-height: 1.35; overflow-wrap: anywhere; }
+.hazard-confidence { display: block; color: #8199a6; font-size: .55rem; line-height: 1.45; }
 .more-hazards { display: block; margin: 10px 0 2px; color: #91a5b1; }
 .flight-conditions footer { margin-top: 12px; color: #6d8594; font-size: .54rem; line-height: 1.4; }
 

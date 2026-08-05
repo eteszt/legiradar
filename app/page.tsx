@@ -537,9 +537,98 @@ function temporalStatusLabel(impact: RouteWeatherImpact) {
   return "Érvényes a várható áthaladáskor";
 }
 
+function turbulenceSeverity(impact: RouteWeatherImpact) {
+  const raw = impact.feature.properties.severity.toUpperCase();
+  const hazard = impact.feature.properties.hazard.toLocaleLowerCase("hu-HU");
+  if (raw.includes("SEV")) {
+    return {
+      level: "severe" as const,
+      label: "Súlyos",
+      explanation: `A hivatalos közlemény súlyos erősségű jelenséget jelöl ezen a területen: ${hazard}.`,
+    };
+  }
+  if (raw.includes("MOD")) {
+    return {
+      level: "moderate" as const,
+      label: "Mérsékelt",
+      explanation: `A hivatalos közlemény mérsékelt erősségű jelenséget jelöl ezen a területen: ${hazard}.`,
+    };
+  }
+  return {
+    level: "advisory" as const,
+    label: "Jelzett",
+    explanation: "A forrás turbulenciaveszélyt jelez, de nem ad egyértelmű erősségi fokozatot.",
+  };
+}
+
 function severityLevel(impact: RouteWeatherImpact) {
-  const severity = impact.feature.properties.severity.toUpperCase();
-  return severity.includes("SEV") ? "severe" : severity.includes("MOD") ? "moderate" : "advisory";
+  return turbulenceSeverity(impact).level;
+}
+
+function etaRelative(etaMinutes: number | null) {
+  if (etaMinutes == null) return "az odaérés ideje nem számítható";
+  if (etaMinutes <= 2) return "várhatóan rövidesen";
+  if (etaMinutes < 60) return `várhatóan kb. ${etaMinutes} perc múlva`;
+  const hours = Math.floor(etaMinutes / 60);
+  const minutes = etaMinutes % 60;
+  return `várhatóan kb. ${hours} óra${minutes ? ` ${minutes} perc` : ""} múlva`;
+}
+
+function aviationDateTime(value: string | null) {
+  if (!value) return "nem ismert";
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return "nem ismert";
+  return `${new Date(parsed).toLocaleDateString("hu-HU", {
+    timeZone: BUDAPEST_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+  })} ${new Date(parsed).toLocaleTimeString("hu-HU", {
+    timeZone: BUDAPEST_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+  })} CET`;
+}
+
+function routeLocationLabel(impact: RouteWeatherImpact, telemetry: WeatherFlight) {
+  const origin = telemetry.journey.origin.iata || telemetry.journey.origin.icao;
+  const destination = telemetry.journey.destination.iata || telemetry.journey.destination.icao;
+  const percent = Math.round(impact.entryPercent);
+  const currentPercent = telemetry.journey.progressPercent ?? 0;
+  const remainingFraction = Math.max(0, Math.min(1, (100 - impact.entryPercent) / Math.max(1, 100 - currentPercent)));
+  const destinationDistance = telemetry.journey.remainingKm == null
+    ? null
+    : Math.round(telemetry.journey.remainingKm * remainingFraction);
+  return `${origin}–${destination} útvonal kb. ${percent}%-ánál${destinationDistance == null ? "" : `, ${destination} előtt kb. ${destinationDistance} km-rel`}`;
+}
+
+function altitudeRelationship(impact: RouteWeatherImpact, telemetry: WeatherFlight) {
+  const base = flightLevelNumber(impact.feature.properties.base);
+  const top = flightLevelNumber(impact.feature.properties.top);
+  const current = telemetry.altitudeM == null ? null : Math.round(telemetry.altitudeM / 30.48);
+  const band = `${impact.feature.properties.base}–${impact.feature.properties.top}`;
+  if (current == null) {
+    return `A jelzett magassági réteg ${band}. A járat tényleges repülési szintje még nem ismert, ezért a magassági érintettség csak indulás után ellenőrizhető.`;
+  }
+  if (base != null && current < base) {
+    return `A gép FL${current}-en repül, a jelzett ${band} réteg alatt, annak aljától kb. ${base - current} repülési szinttel alacsonyabban.`;
+  }
+  if (top != null && current > top) {
+    return `A gép FL${current}-en repül, a jelzett ${band} réteg felett, annak tetejétől kb. ${current - top} repülési szinttel magasabban.`;
+  }
+  return `A gép FL${current}-en repül, vagyis a jelzett ${band} magassági rétegen belül van.`;
+}
+
+function hazardPlainLanguage(impact: RouteWeatherImpact) {
+  const severity = turbulenceSeverity(impact);
+  const hazard = impact.feature.properties.hazard.toLocaleLowerCase("hu-HU");
+  if (!impact.temporallyRelevant) {
+    return `${severity.label} besorolású területi jelzés („${hazard}”) metszi az útvonalat, de a közlemény várhatóan nem lesz aktív az áthaladáskor.`;
+  }
+  if (!impact.altitudeRelevant) {
+    return `${severity.label} besorolású területi jelzés („${hazard}”) metszi az útvonalat, de a gép jelenlegi repülési szintje kívül esik a jelzett rétegen.`;
+  }
+  const duration = impact.durationMinutes == null ? "ismeretlen ideig" : `kb. ${impact.durationMinutes} percig`;
+  return `${severity.label} besorolású hivatalos területi jelzés („${hazard}”) érinti az útvonalat. A járat ${etaRelative(impact.entryEtaMinutes)} érheti el, és ${duration} haladhat a jelzett szakaszban.`;
 }
 
 function FlightConditionsPanel({
@@ -604,24 +693,51 @@ function FlightConditionsPanel({
       </div>
       {!loading && impacts.slice(0, 4).map((impact) => {
         const actuallyRelevant = impact.altitudeRelevant && impact.temporallyRelevant;
+        const severity = turbulenceSeverity(impact);
         return (
           <article className={`hazard-card ${actuallyRelevant ? severityLevel(impact) : "inactive"}`} key={impact.id}>
             <div className="hazard-card-head">
               <div>
-                <span>{impact.feature.properties.hazard}</span>
-                <strong>{impact.feature.properties.severity} · {impact.feature.properties.base}–{impact.feature.properties.top}</strong>
+                <span>{severity.label} {impact.feature.properties.hazard.toLocaleLowerCase("hu-HU")}</span>
+                <strong>{impact.feature.properties.source} · {impact.feature.properties.severity} · {impact.feature.properties.base}–{impact.feature.properties.top}</strong>
               </div>
               <b>{actuallyRelevant ? "RELEVÁNS" : !impact.altitudeRelevant ? "MÁS MAGASSÁG" : "NEM AKTÍV"}</b>
             </div>
+            <p className="hazard-plain-summary">{hazardPlainLanguage(impact)}</p>
             <div className="hazard-route-grid">
-              <div><span>BELÉPÉS</span><strong>{etaClock(telemetry.updatedAt, impact.entryEtaMinutes)}</strong><small>{coordinateLabel(impact.entryPoint)} · {Math.round(impact.entryPercent)}%</small></div>
-              <div><span>KILÉPÉS</span><strong>{etaClock(telemetry.updatedAt, impact.exitEtaMinutes)}</strong><small>{coordinateLabel(impact.exitPoint)} · {Math.round(impact.exitPercent)}%</small></div>
+              <div><span>VÁRHATÓ BELÉPÉS</span><strong>{impact.entryEtaMinutes == null ? "—" : `${etaClock(telemetry.updatedAt, impact.entryEtaMinutes)} CET`}</strong><small>{etaRelative(impact.entryEtaMinutes)} · {Math.round(impact.entryPercent)}%</small></div>
+              <div><span>VÁRHATÓ KILÉPÉS</span><strong>{impact.exitEtaMinutes == null ? "—" : `${etaClock(telemetry.updatedAt, impact.exitEtaMinutes)} CET`}</strong><small>{impact.durationMinutes == null ? "időtartam nem számítható" : `kb. ${impact.durationMinutes} perc múlva a belépéstől`}</small></div>
             </div>
             <div className="hazard-facts">
+              <span>Útvonalhelyzet <b>{routeLocationLabel(impact, telemetry)}</b></span>
               <span>Érintett szakasz <b>{impact.affectedKm == null ? "—" : impact.affectedKm < 5 ? "<5 km" : `${impact.affectedKm} km`}</b></span>
               <span>Becsült időtartam <b>{impact.durationMinutes == null ? "—" : `kb. ${impact.durationMinutes} perc`}</b></span>
               <span className={impact.temporallyRelevant ? "valid" : "expired"}>{temporalStatusLabel(impact)}</span>
             </div>
+            <details className="hazard-details">
+              <summary>Részletes értelmezés <span>útvonal · magasság · érvényesség</span></summary>
+              <div className="hazard-details-body">
+                <section>
+                  <span>MIT JELENT?</span>
+                  <p>{severity.explanation} Ez területi veszélyjelzés, nem annak bizonyítéka, hogy a gépen biztosan ilyen erősségű hatás lesz tapasztalható.</p>
+                </section>
+                <section>
+                  <span>MAGASSÁGI ÉRINTETTSÉG</span>
+                  <p>{altitudeRelationship(impact, telemetry)}</p>
+                </section>
+                <section>
+                  <span>HELY ÉS IDŐ</span>
+                  <p>{routeLocationLabel(impact, telemetry)}. Becsült belépési pont: {coordinateLabel(impact.entryPoint)}; kilépési pont: {coordinateLabel(impact.exitPoint)}.</p>
+                </section>
+                <dl>
+                  <div><dt>Forrás</dt><dd>{impact.feature.properties.source}</dd></div>
+                  <div><dt>Terület</dt><dd>{impact.feature.properties.area || "nincs megadva"}</dd></div>
+                  <div><dt>Érvényes ettől</dt><dd>{aviationDateTime(impact.feature.properties.validFrom)}</dd></div>
+                  <div><dt>Érvényes eddig</dt><dd>{aviationDateTime(impact.feature.properties.validTo)}</dd></div>
+                </dl>
+                <small className="hazard-confidence">Döntéstámogató becslés: az útvonal ±{ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójának mintavétele alapján. A tényleges útvonal, repülési szint és időzítés változhat.</small>
+              </div>
+            </details>
           </article>
         );
       })}
@@ -1972,7 +2088,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051726</small>
+          <small className="app-version">202608051825</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
