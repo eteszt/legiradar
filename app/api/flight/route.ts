@@ -11,6 +11,7 @@ import {
   type Fr24LiveFlight,
   type Fr24ScheduleOccurrence,
 } from "./fr24";
+import { lookupAdsbdbCallsign, type AdsbdbFlightRouteRecord } from "./adsbdb";
 import {
   commercialFlightFromCallsign,
   exactCommercialFromFlightAwarePage,
@@ -50,6 +51,8 @@ type RouteLookup = {
   route: FlightRoute | null;
   callsignIcao: string | null;
   callsignIata: string | null;
+  matchedInput: string | null;
+  cacheHit: boolean | null;
 };
 type LiveFlightIdentity = {
   flight: string;
@@ -237,11 +240,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   return radius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function routeFromRecord(route: {
-  airline?: { name?: string } | null;
-  origin?: Record<string, unknown>;
-  destination?: Record<string, unknown>;
-} | null | undefined): FlightRoute | null {
+function routeFromRecord(route: AdsbdbFlightRouteRecord | null | undefined): FlightRoute | null {
   const origin = route?.origin;
   const destination = route?.destination;
   const originLat = number(origin?.latitude);
@@ -268,44 +267,32 @@ function routeFromRecord(route: {
 }
 
 async function fetchRouteLookup(callsigns: string[]): Promise<RouteLookup> {
-  for (const callsign of callsigns) {
+  for (const callsign of Array.from(new Set(callsigns)).slice(0, 6)) {
     try {
-      const response = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign)}`, {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (!response.ok) continue;
-      const payload = (await response.json()) as {
-        response?: {
-          flightroute?: {
-            callsign_icao?: string | null;
-            callsign_iata?: string | null;
-            airline?: { name?: string } | null;
-            origin?: Record<string, unknown>;
-            destination?: Record<string, unknown>;
-          };
-        };
-      };
-      const route = payload.response?.flightroute;
-      const callsignIcao = route?.callsign_icao ? String(route.callsign_icao).toUpperCase() : null;
-      const callsignIata = route?.callsign_iata ? String(route.callsign_iata).toUpperCase() : null;
-      const parsedRoute = routeFromRecord(route);
-      if (!parsedRoute) {
-        if (callsignIcao || callsignIata) {
-          return { route: null, callsignIcao, callsignIata };
-        }
-        continue;
-      }
+      const lookup = await lookupAdsbdbCallsign(callsign);
+      if (!lookup) continue;
+      const parsedRoute = routeFromRecord(lookup.record);
+      if (!parsedRoute && !lookup.callsignIcao && !lookup.callsignIata) continue;
       return {
         route: parsedRoute,
-        callsignIcao,
-        callsignIata,
+        callsignIcao: lookup.callsignIcao,
+        callsignIata: lookup.callsignIata,
+        matchedInput: lookup.matchedInput,
+        cacheHit: lookup.cacheHit,
       };
     } catch {
-      // Ha nincs útvonaladat, a valós idejű telemetria továbbra is megjelenik.
+      // Timeout, rate limit vagy szolgáltatóhiba után azonnal a független
+      // fallbackek következnek; a kiesett providert nem kérdezzük újra.
+      break;
     }
   }
-  return { route: null, callsignIcao: null, callsignIata: null };
+  return {
+    route: null,
+    callsignIcao: null,
+    callsignIata: null,
+    matchedInput: null,
+    cacheHit: null,
+  };
 }
 
 async function resolveAirlineIcao(iata: string): Promise<string | null> {
@@ -325,16 +312,16 @@ async function resolveAirlineIcao(iata: string): Promise<string | null> {
   return null;
 }
 
-async function resolveFlightNumber(input: string) {
+async function resolveFlightNumber(input: string, primaryRouteLookup?: RouteLookup) {
   const normalized = input.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const iataMatch = normalized.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
   const airlineIcao = iataMatch ? await resolveAirlineIcao(iataMatch[1]) : null;
   const staticCandidates = staticCallsignCandidates(normalized, airlineIcao);
-  // A kereskedelmi járatszámból képzett hívójel nem mindig egyezik az adott
-  // napon használt operatív callsignnal (pl. számok helyett betűs rövidítés).
-  // Az ADSBDB járatútvonal-feloldása mindkét azonosítót visszaadhatja, ezért
-  // még az élő pozíció keresése előtt hozzáadjuk ezeket a jelölteket.
-  const routeLookup = await fetchRouteLookup(staticCandidates);
+  // Az eredeti IATA/ICAO inputot kérdezzük először. Az ADSBDB mindkét alakot
+  // támogatja, így nem tesszük a helyi operátorprefix-listát előfeltétellé.
+  const routeLookup = primaryRouteLookup?.callsignIcao || primaryRouteLookup?.callsignIata
+    ? primaryRouteLookup
+    : await fetchRouteLookup([normalized, ...staticCandidates]);
   const providerIata = routeLookup.callsignIata;
   const resolvedIcao = routeLookup.callsignIcao;
   const curatedCommercialFlight = iataMatch ? normalized : commercialFlightFromCallsign(normalized);
@@ -1118,18 +1105,33 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(cachedLive.value);
   }
 
-  // Kereskedelmi járatszámnál a legmagasabb bizalmú első lépés egy aktuális
-  // live-flight identity rekord. Ez ugyanabban a pillanatnyi rekordban köti össze
-  // az IATA-járatszámot a tényleges operatív callsignnal és a repülőgép hexével.
-  // Csak ennek sikertelensége után képezünk statikus ICAO/callsign jelölteket.
-  const inferredCommercialFlight = commercialFlightFromCallsign(flight);
-  const commercialIdentityQueries = commercialLiveIdentityQueries(inferredCommercialFlight || flight);
+  const primaryRouteLookup = await fetchRouteLookup([flight]);
+  const identityResolution = primaryRouteLookup.callsignIcao || primaryRouteLookup.callsignIata
+    ? {
+        source: "ADSBDB",
+        matchedInput: primaryRouteLookup.matchedInput,
+        callsignIcao: primaryRouteLookup.callsignIcao,
+        callsignIata: primaryRouteLookup.callsignIata,
+        cacheHit: primaryRouteLookup.cacheHit,
+      }
+    : null;
+
+  // Az ADSBDB exact IATA↔ICAO aliaspárja már a legelső élő identity
+  // lekérdezéshez rendelkezésre áll. A provider kiesése esetén a korábbi
+  // kézi és dinamikus feloldás változatlanul folytatódik.
+  const inferredCommercialFlight = primaryRouteLookup.callsignIata
+    || commercialFlightFromCallsign(flight);
+  const commercialIdentityQueries = Array.from(new Set([
+    ...commercialLiveIdentityQueries(inferredCommercialFlight || flight),
+    primaryRouteLookup.callsignIata,
+    primaryRouteLookup.callsignIcao,
+  ].filter((value): value is string => Boolean(value))));
   const wantedCommercialFlight = commercialIdentityQueries[0] || flight;
   if (!scheduleOnly && commercialIdentityQueries.length) {
     try {
       const targeted = await findTargetedAirborne(commercialIdentityQueries);
       if (targeted) {
-        const route = routeFromTargetedLive(targeted, null);
+        const route = routeFromTargetedLive(targeted, null) || primaryRouteLookup.route;
         const data = shape(
           aircraftFromTargetedLive(targeted),
           targeted.flight || flight,
@@ -1139,6 +1141,7 @@ export async function GET(request: NextRequest) {
         );
         if (data) {
           return liveResponse(flight, {
+            identityResolution,
             data,
             searchedCallsigns: Array.from(new Set([
               targeted.callsign,
@@ -1193,6 +1196,7 @@ export async function GET(request: NextRequest) {
             );
             if (data) {
               return liveResponse(flight, {
+            identityResolution,
                 data,
                 searchedCallsigns: Array.from(new Set([flight, wantedCommercialFlight, effectiveCallsign])),
                 resolvedAirlineIcao: effectiveCallsign.match(/^([A-Z]{3})/)?.[1] || null,
@@ -1207,7 +1211,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const resolved = await resolveFlightNumber(flight);
+  const resolved = await resolveFlightNumber(flight, primaryRouteLookup);
   const candidates = resolved.candidates;
   const scheduleFlight = resolved.flightNumber || flight;
 
@@ -1215,10 +1219,18 @@ export async function GET(request: NextRequest) {
     try {
       const scheduled = await fetchScheduledFlight(scheduleFlight, candidates);
       if (!scheduled) {
-        return NextResponse.json({ error: `A ${flight} járathoz nem található közelgő indulás.` }, { status: 404 });
+        return NextResponse.json({
+          error: `A ${flight} járathoz nem található közelgő indulás.`,
+          searchedCallsigns: candidates,
+          identityResolution,
+        }, { status: 404 });
       }
       const route = await routeFromSchedule(scheduled);
-      return NextResponse.json({ scheduled: { ...scheduled, route }, searchedCallsigns: candidates });
+      return NextResponse.json({
+        scheduled: { ...scheduled, route },
+        searchedCallsigns: candidates,
+        identityResolution,
+      });
     } catch (error) {
       return NextResponse.json(
         { error: error instanceof Error ? error.message : "A menetrendi adatforrás nem elérhető." },
@@ -1246,6 +1258,7 @@ export async function GET(request: NextRequest) {
       );
       if (data) {
         return liveResponse(flight, {
+            identityResolution,
           data,
           searchedCallsigns: Array.from(new Set([
             targeted.callsign,
@@ -1363,6 +1376,7 @@ export async function GET(request: NextRequest) {
     }
     if (data) {
       return liveResponse(flight, {
+            identityResolution,
         data,
         searchedCallsigns: candidates,
         resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -1414,6 +1428,7 @@ export async function GET(request: NextRequest) {
         );
         if (data) {
           return liveResponse(flight, {
+            identityResolution,
             data,
             searchedCallsigns: Array.from(new Set([
               routeMatched.callsign,
@@ -1441,6 +1456,7 @@ export async function GET(request: NextRequest) {
       : null;
     if (liveData) {
       return liveResponse(flight, {
+            identityResolution,
         data: liveData,
         searchedCallsigns: candidates,
         resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -1476,6 +1492,7 @@ export async function GET(request: NextRequest) {
       error: `A ${flight} járatszámot ${candidates.filter((candidate) => candidate !== flight).join(", ") || flight} hívójelre oldottuk fel, de a repülőgép most nem látható az ADS-B hálózaton.`,
       searchedCallsigns: candidates,
       resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+      identityResolution,
     },
     { status: 404 },
   );
