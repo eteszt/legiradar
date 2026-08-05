@@ -1061,6 +1061,26 @@ function gaugeArc(startAngle: number, endAngle: number, radius: number) {
   return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${endAngle - startAngle <= 180 ? 0 : 1} 0 ${end.x} ${end.y}`;
 }
 
+function deriveWindFromMotion(telemetry: Telemetry) {
+  if (
+    telemetry.trueAirspeedKmh == null
+    || telemetry.groundSpeedKmh == null
+    || telemetry.trueHeadingDeg == null
+    || telemetry.trackDeg == null
+  ) return null;
+  const radians = (degrees: number) => degrees * Math.PI / 180;
+  const groundEast = telemetry.groundSpeedKmh * Math.sin(radians(telemetry.trackDeg));
+  const groundNorth = telemetry.groundSpeedKmh * Math.cos(radians(telemetry.trackDeg));
+  const airEast = telemetry.trueAirspeedKmh * Math.sin(radians(telemetry.trueHeadingDeg));
+  const airNorth = telemetry.trueAirspeedKmh * Math.cos(radians(telemetry.trueHeadingDeg));
+  const windEast = groundEast - airEast;
+  const windNorth = groundNorth - airNorth;
+  const speed = Math.hypot(windEast, windNorth);
+  if (!Number.isFinite(speed) || speed > 400) return null;
+  const toward = (Math.atan2(windEast, windNorth) * 180 / Math.PI + 360) % 360;
+  return { speed, direction: (toward + 180) % 360 };
+}
+
 function InstrumentDial({ label, value, min, max, display, unit, secondary, accent = "cyan" }: {
   label: string;
   value: number | null;
@@ -1104,6 +1124,36 @@ function TelemetryInstruments({ telemetry }: { telemetry: Telemetry }) {
   const roll = telemetry.rollDeg ?? 0;
   const verticalRate = telemetry.geometricRateMs ?? telemetry.verticalRateMs;
   const signalRatio = telemetry.rssiDbfs == null ? 0 : Math.min(1, Math.max(0, (telemetry.rssiDbfs + 35) / 35));
+  const derivedWind = deriveWindFromMotion(telemetry);
+  const windSpeed = telemetry.windSpeedKmh ?? derivedWind?.speed ?? null;
+  const windDirection = telemetry.windDirectionDeg ?? derivedWind?.direction ?? null;
+  const windIsDerived = (telemetry.windSpeedKmh == null || telemetry.windDirectionDeg == null) && derivedWind != null;
+  const relativeWind = heading != null && windSpeed != null && windDirection != null
+    ? ((windDirection - heading + 540) % 360) - 180
+    : null;
+  const headwindComponent = relativeWind == null || windSpeed == null
+    ? null
+    : windSpeed * Math.cos(relativeWind * Math.PI / 180);
+  const crosswindComponent = relativeWind == null || windSpeed == null
+    ? null
+    : windSpeed * Math.sin(relativeWind * Math.PI / 180);
+  const windLoadLabel = headwindComponent == null
+    ? "SZÉLTERHELÉS"
+    : headwindComponent >= 0 ? "SZEMBESZÉL" : "HÁTSZÉL";
+  const crosswindLabel = crosswindComponent == null
+    ? "OLDALSZÉL"
+    : crosswindComponent >= 0 ? "JOBBRÓL" : "BALRÓL";
+  const atmosphereAltitude = telemetry.geometricAltitudeM ?? telemetry.altitudeM;
+  const isaReferenceTemp = atmosphereAltitude == null
+    ? null
+    : Math.max(-56.5, 15 - 0.0065 * Math.max(0, atmosphereAltitude));
+  const displayedAirTemp = telemetry.outsideAirTempC ?? isaReferenceTemp;
+  const temperatureIsReference = telemetry.outsideAirTempC == null && isaReferenceTemp != null;
+  const temperatureContext = temperatureIsReference
+    ? "Szabványlégköri referencia · nem mérés"
+    : telemetry.outsideAirTempC == null
+      ? "A gép nem sugároz hőmérsékletet"
+      : telemetry.outsideAirTempC <= 0 ? "Fagypont alatti külső levegő" : "Fagypont feletti külső levegő";
 
   return (
     <div className="instrument-console">
@@ -1138,17 +1188,33 @@ function TelemetryInstruments({ telemetry }: { telemetry: Telemetry }) {
           <div className="instrument-secondary">Dőlés {fmt(telemetry.rollDeg, 1)}° · geometriai emelkedés</div>
         </article>
 
-        <article className="instrument-card environment-instrument">
-          <div className="instrument-heading"><span>KÖRNYEZET</span><i>AIR</i></div>
+        <article className="instrument-card environment-instrument amber">
+          <div className="instrument-heading"><span>LÉGKÖR · SZÉL</span><i>AIR DATA</i></div>
           <div className="environment-body">
-            <div className="thermometer"><i style={{ height: `${Math.min(100, Math.max(8, ((telemetry.outsideAirTempC ?? -80) + 80) / 130 * 100))}%` }} /></div>
-            <div className="environment-values">
-              <span>KÜLSŐ HŐMÉRSÉKLET<strong>{fmt(telemetry.outsideAirTempC, 1)} <small>°C</small></strong></span>
-              <span>TELJES HŐMÉRSÉKLET<strong>{fmt(telemetry.totalAirTempC, 1)} <small>°C</small></strong></span>
-              <span>QNH<strong>{fmt(telemetry.navQnhHpa, 1)} <small>hPa</small></strong></span>
+            <div className="temperature-module">
+              <div className="thermometer-scale" aria-hidden="true"><span>+40</span><span>0</span><span>−40</span><span>−80</span></div>
+              <div className="thermometer">{displayedAirTemp != null && <i style={{ height: `${Math.min(100, Math.max(8, (displayedAirTemp + 80) / 130 * 100))}%` }} />}</div>
+              <div className="temperature-readout">
+                <span>{temperatureIsReference ? "ISA HŐMÉRSÉKLET · REFERENCIA" : "KÜLSŐ LEVEGŐ · OAT"}</span>
+                <strong>{fmt(displayedAirTemp, 1)}<small>°C</small></strong>
+                <em>{temperatureContext}</em>
+                <b>{telemetry.totalAirTempC == null ? "TAT NEM ÉRKEZIK" : `TAT ${fmt(telemetry.totalAirTempC, 1)} °C`}</b>
+              </div>
+            </div>
+            <div className="wind-module">
+              <div className="wind-rose" aria-label={`Szél ${fmt(windDirection)} fok felől, ${fmt(windSpeed)} kilométer per óra`}>
+                <span className="wind-north">N</span><span className="wind-east">E</span><span className="wind-south">S</span><span className="wind-west">W</span>
+                {windDirection != null && <i className="wind-arrow" style={{ transform: `translate(-50%, -50%) rotate(${windDirection}deg)` }}>↓</i>}
+                <div><strong>{fmt(windSpeed)}</strong><small>km/h</small></div>
+              </div>
+              <span className="wind-from">{windDirection == null ? "NINCS SZÉLADAT" : `${fmt(windDirection)}° FELŐL · ${windIsDerived ? "SZÁMÍTOTT" : "MÉRT"}`}</span>
             </div>
           </div>
-          <div className="instrument-secondary">Szél {fmt(telemetry.windSpeedKmh)} km/h · {fmt(telemetry.windDirectionDeg)}°</div>
+          <div className="environment-facts">
+            <span><small>{windLoadLabel}</small><strong>{fmt(headwindComponent == null ? null : Math.abs(headwindComponent))} <i>km/h</i></strong></span>
+            <span><small>{crosswindLabel}</small><strong>{fmt(crosswindComponent == null ? null : Math.abs(crosswindComponent))} <i>km/h</i></strong></span>
+            <span><small>BEÁLLÍTOTT QNH</small><strong>{fmt(telemetry.navQnhHpa, 1)} <i>hPa</i></strong></span>
+          </div>
         </article>
 
         <article className="instrument-card signal-instrument lime">
@@ -1904,7 +1970,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051036</small>
+          <small className="app-version">202608051056</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
