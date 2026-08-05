@@ -8,6 +8,7 @@ import {
   mapSchedulePageRows,
   mapTargetedAirborneDetail,
   scheduleQueriesFromSearch,
+  selectCurrentAirframeOccurrence,
   selectNext24hOccurrence,
   type Fr24ScheduleOccurrence,
 } from "../app/api/flight/fr24.ts";
@@ -104,6 +105,27 @@ test("24-hour boundary is inclusive and older occurrences are excluded", () => {
     occurrence({ departureAt: "2026-08-04T12:00:00Z" }),
   ], ["DL183"], now);
   assert.equal(selected?.departureAt, "2026-08-04T12:00:00Z");
+});
+
+test("current dated occurrence exposes the assigned airframe for live identity reconciliation", () => {
+  const selected = selectCurrentAirframeOccurrence([
+    occurrence({
+      flight: "FR2812",
+      registration: "EI-IJP",
+      departureAt: "2026-08-03T11:00:00Z",
+      actualDepartureAt: "2026-08-03T11:20:00Z",
+      arrivalAt: "2026-08-03T15:30:00Z",
+      status: "Estimated 15:33",
+    }),
+    occurrence({
+      flight: "FR2812",
+      registration: "EI-OLD",
+      departureAt: "2026-08-02T11:00:00Z",
+      arrivalAt: "2026-08-02T15:30:00Z",
+      status: "Landed",
+    }),
+  ], ["FR2812"], now);
+  assert.equal(selected?.registration, "EI-IJP");
 });
 
 test("FR24 search index resolves commercial and ICAO forms to one schedule query", () => {

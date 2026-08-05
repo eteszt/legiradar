@@ -3,6 +3,7 @@ import airlines from "airline-codes/airlines.json";
 import airports from "@nwpr/airport-codes";
 import {
   commercialLiveIdentityQueries,
+  findCurrentAirframeOccurrence,
   findNext24hSchedule,
   findTargetedAirborne,
   type Fr24Airport,
@@ -1147,6 +1148,47 @@ export async function GET(request: NextRequest) {
     } catch {
       // A live identity adapter hibája nem jelent tényszerű "nincs ilyen járat"
       // eredményt; ilyenkor a korábbi, korlátozott fallback lánc folytatódik.
+    }
+
+    // Az exact keresőindex felhős környezetből időnként üres pillanatképet ad.
+    // A dátumozott aktuális járatelőfordulás ekkor a ténylegesen kiosztott
+    // lajstromjelet adja; ezzel kérjük le a gépet, majd az élő feedben ugyanarra
+    // a hexre visszaellenőrizzük a kereskedelmi számot és a broadcast callsignt.
+    try {
+      const occurrence = await findCurrentAirframeOccurrence(commercialIdentityQueries);
+      if (occurrence?.registration) {
+        const found = await Promise.any(
+          communityProviders.map(async (provider) => ({
+            aircraft: await fetchProvider(provider.baseUrl, "reg", occurrence.registration!),
+            provider,
+          })),
+        );
+        const broadcastCallsign = String(found.aircraft.flight || "").trim().toUpperCase();
+        if (broadcastCallsign) {
+          const identity = await fetchLiveFlightIdentity(found.aircraft, broadcastCallsign, null);
+          if (identity?.flight === flight && identity.callsign === broadcastCallsign) {
+            const scheduled = scheduledInfoFromFr24({ ...occurrence, callsign: broadcastCallsign });
+            const route = identity.route || await routeFromSchedule(scheduled);
+            const data = shape(
+              found.aircraft,
+              identity.flight,
+              `${found.provider.label} · aktuális járatelőfordulás lajstromjele alapján, élő identitással ellenőrizve`,
+              route,
+              scheduled,
+            );
+            if (data) {
+              return liveResponse(flight, {
+                data,
+                searchedCallsigns: [flight, broadcastCallsign],
+                resolvedAirlineIcao: broadcastCallsign.match(/^([A-Z]{3})/)?.[1] || null,
+                matchedByCurrentRegistration: true,
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // A lajstromjel-alapú híd sikertelensége után a korábbi fallbackek futnak.
     }
   }
 

@@ -517,6 +517,33 @@ export function selectNext24hOccurrence(
     .sort((left, right) => Date.parse(left.departureAt) - Date.parse(right.departureAt))[0] || null;
 }
 
+export function selectCurrentAirframeOccurrence(
+  occurrences: Fr24ScheduleOccurrence[],
+  identifiers: string[],
+  now = Date.now(),
+) {
+  const wanted = new Set(identifiers.map(normalizeFlightIdentifier).filter(Boolean));
+  return occurrences
+    .filter((item) => {
+      const departure = Date.parse(item.actualDepartureAt || item.estimatedDepartureAt || item.departureAt);
+      const arrival = Date.parse(item.estimatedArrivalAt || item.arrivalAt || "");
+      const status = item.status.toLowerCase();
+      return wanted.has(normalizeFlightIdentifier(item.flight))
+        && Boolean(item.registration)
+        && !status.includes("cancel")
+        && !status.includes("landed")
+        && Number.isFinite(departure)
+        && Number.isFinite(arrival)
+        && departure <= now + 30 * 60_000
+        && arrival >= now - 45 * 60_000;
+    })
+    .sort((left, right) => {
+      const leftDeparture = Date.parse(left.actualDepartureAt || left.estimatedDepartureAt || left.departureAt);
+      const rightDeparture = Date.parse(right.actualDepartureAt || right.estimatedDepartureAt || right.departureAt);
+      return Math.abs(now - leftDeparture) - Math.abs(now - rightDeparture);
+    })[0] || null;
+}
+
 export function scheduleQueriesFromSearch(rawPayload: unknown, identifiers: string[]) {
   const payload = object(rawPayload);
   const results = Array.isArray(payload.results) ? payload.results : [];
@@ -594,6 +621,41 @@ export async function findNext24hSchedule(
       if (selected) return selected;
     } catch {
       // A következő, pontosan feloldott kereskedelmi azonosítót is megpróbáljuk.
+    }
+  }
+  return null;
+}
+
+export async function findCurrentAirframeOccurrence(
+  identifiers: string[],
+  now = Date.now(),
+): Promise<Fr24ScheduleOccurrence | null> {
+  const wanted = Array.from(new Set(identifiers.map(normalizeFlightIdentifier).filter(Boolean)));
+  const queries = await resolveScheduleQueries(wanted);
+  const selectionIdentifiers = Array.from(new Set([...wanted, ...queries]));
+  for (const query of queries) {
+    try {
+      const readerUrl = `https://r.jina.ai/https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`;
+      const markdown = await fetchText(readerUrl, 1);
+      const selected = selectCurrentAirframeOccurrence(
+        mapScheduleMarkdownRows(markdown, query),
+        selectionIdentifiers,
+        now,
+      );
+      if (selected) return selected;
+    } catch {
+      // A közvetlen nyilvános oldal ugyanazt a dátumozott előfordulást adhatja.
+    }
+    try {
+      const html = await fetchText(`https://www.flightradar24.com/data/flights/${encodeURIComponent(query.toLowerCase())}`, 1);
+      const selected = selectCurrentAirframeOccurrence(
+        mapSchedulePageRows(html, query),
+        selectionIdentifiers,
+        now,
+      );
+      if (selected) return selected;
+    } catch {
+      // A következő pontos kereskedelmi azonosítót próbáljuk.
     }
   }
   return null;
