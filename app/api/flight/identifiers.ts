@@ -22,6 +22,16 @@ export const operatorIcaoOverrides: Record<string, string> = {
   DY: "NOZ",
 };
 
+export function exactCommercialFromFlightAwarePage(html: string, callsign: string) {
+  const normalizedCallsign = callsign.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const callsignPrefix = normalizedCallsign.match(/^([A-Z]{3})/)?.[1];
+  const encodedFlight = html.match(/\"iataIdent\":\"([A-Z0-9]+)\"/i)?.[1];
+  const flight = encodedFlight?.toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
+  const iataPrefix = flight?.match(/^([A-Z0-9]{2})\d{1,4}[A-Z]?$/)?.[1];
+  if (!flight || !iataPrefix || !callsignPrefix) return null;
+  return operatorIcaoOverrides[iataPrefix] === callsignPrefix ? flight : null;
+}
+
 export function trustedCommercialAlias(providerAlias: string | null, curatedFlight: string | null) {
   const provider = providerAlias?.toUpperCase().replace(/[^A-Z0-9]/g, "") || null;
   const curated = curatedFlight?.toUpperCase().replace(/[^A-Z0-9]/g, "") || null;

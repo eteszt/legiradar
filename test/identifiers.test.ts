@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   commercialFlightFromCallsign,
+  exactCommercialFromFlightAwarePage,
   operatorIcaoOverrides,
   staticCallsignCandidates,
   trustedCommercialAlias,
@@ -25,6 +26,9 @@ test("French bee BF commercial numbers use the current FBU operator prefix", () 
   assert.equal(commercialFlightFromCallsign("FBU74E"), null);
   assert.notEqual(commercialFlightFromCallsign("FBU74E"), "BF74E");
   assert.equal(trustedCommercialAlias("704", "BF704"), null);
+  const livePage = `<title>BF74E (FBU74E)</title><script>{"iataIdent":"BF704","ident":"FBU704"}</script>`;
+  assert.equal(exactCommercialFromFlightAwarePage(livePage, "FBU74E"), "BF704");
+  assert.equal(exactCommercialFromFlightAwarePage(livePage, "AAL1028"), null);
 });
 
 test("dynamic current operator resolution still takes precedence", () => {

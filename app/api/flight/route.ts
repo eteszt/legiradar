@@ -10,6 +10,7 @@ import {
 } from "./fr24";
 import {
   commercialFlightFromCallsign,
+  exactCommercialFromFlightAwarePage,
   operatorIcaoOverrides,
   staticCallsignCandidates,
   trustedCommercialAlias,
@@ -732,6 +733,38 @@ function aircraftFromTargetedLive(live: Fr24LiveFlight): AdsbAircraft {
   };
 }
 
+async function fetchFlightAwareLiveIdentity(
+  callsign: string,
+  airlineName: string | null,
+): Promise<LiveFlightIdentity | null> {
+  try {
+    const response = await fetch(
+      `https://www.flightaware.com/live/flight/${encodeURIComponent(callsign)}`,
+      {
+        headers: {
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+        },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!response.ok) return null;
+    const html = await response.text();
+    const flight = exactCommercialFromFlightAwarePage(html, callsign);
+    if (!flight) return null;
+    const originIata = html.match(/setTargeting\('origin_IATA',\s*'([A-Z0-9]+)'\)/i)?.[1] || "";
+    const destinationIata = html.match(/setTargeting\('destination_IATA',\s*'([A-Z0-9]+)'\)/i)?.[1] || "";
+    return {
+      flight,
+      callsign: callsign.trim().toUpperCase(),
+      route: routeFromIataPair(originIata, destinationIata, airlineName),
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function fetchLiveFlightIdentity(
   aircraft: AdsbAircraft,
   callsign: string,
@@ -792,6 +825,17 @@ async function fetchLiveFlightIdentity(
     if (row) break;
   }
   if (!row) {
+    // Az exact ADS-B callsign már ugyanahhoz az élő géphez kötődik; ha a FR24
+    // területi feed pillanatképe kihagyja, a FlightAware exact callsign-oldalának
+    // aktuális iataIdent mezője adhat biztonságos kereskedelmi azonosítást.
+    const flightAwareIdentity = await fetchFlightAwareLiveIdentity(normalizedCallsign, airlineName);
+    if (flightAwareIdentity) {
+      liveIdentityCache.set(cacheKey, {
+        expiresAt: Date.now() + 5 * 60_000,
+        value: flightAwareIdentity,
+      });
+      return flightAwareIdentity;
+    }
     if (lastError) throw lastError;
     return null;
   }
