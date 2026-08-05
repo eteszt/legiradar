@@ -17,6 +17,14 @@ test("Freebird Airlines commercial number resolves to current FHY callsign", () 
   assert.equal(trustedCommercialAlias("FH8116", "FH8116"), "FH8116");
 });
 
+test("French bee BF commercial numbers use the current FBU operator prefix", () => {
+  assert.equal(operatorIcaoOverrides.BF, "FBU");
+  assert.deepEqual(staticCallsignCandidates("BF704"), ["FBU704", "FBU0704", "BF704"]);
+  assert.ok(!staticCallsignCandidates("BF704").some((candidate) => candidate.startsWith("RSR")));
+  assert.equal(commercialFlightFromCallsign("FBU704"), "BF704");
+  assert.equal(trustedCommercialAlias("704", "BF704"), null);
+});
+
 test("dynamic current operator resolution still takes precedence", () => {
   assert.equal(staticCallsignCandidates("FH8116", "ABC")[0], "ABC8116");
 });

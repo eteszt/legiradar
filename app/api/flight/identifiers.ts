@@ -3,6 +3,7 @@ export const operatorIcaoOverrides: Record<string, string> = {
   W4: "WMT",
   FR: "RYR",
   FH: "FHY",
+  BF: "FBU",
   LH: "DLH",
   BA: "BAW",
   KL: "KLM",
