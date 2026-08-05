@@ -1,6 +1,44 @@
 export type RoutePoint = { lat: number; lon: number };
 
+export async function firstNonNullWithRetry<T>(
+  attempts: number,
+  operation: (attempt: number) => Promise<T | null>,
+  baseDelayMs = 0,
+): Promise<T | null> {
+  const count = Math.max(1, Math.floor(attempts));
+  for (let attempt = 0; attempt < count; attempt += 1) {
+    const value = await operation(attempt);
+    if (value !== null) return value;
+    if (baseDelayMs > 0 && attempt + 1 < count) {
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
 export type RouteScanAircraft = Record<string, unknown>;
+
+export function standingCallsignsForRoute(
+  csv: string,
+  originIcao: string,
+  destinationIcao: string,
+): string[] {
+  const wantedOrigin = originIcao.trim().toUpperCase();
+  const wantedDestination = destinationIcao.trim().toUpperCase();
+  if (!wantedOrigin || !wantedDestination) return [];
+  const callsigns = new Set<string>();
+  for (const line of csv.split(/\r?\n/)) {
+    const columns = line.split(",");
+    const callsign = String(columns[0] || "").trim().toUpperCase();
+    const route = String(columns[columns.length - 1] || "").trim().toUpperCase();
+    const airports = route.split("-").filter(Boolean);
+    const exactDirection = airports.some((airport, index) => (
+      airport === wantedOrigin && airports[index + 1] === wantedDestination
+    ));
+    if (callsign && exactDirection) callsigns.add(callsign);
+  }
+  return Array.from(callsigns);
+}
 
 export const operatorIcaoFamilies: Record<string, readonly string[]> = {
   // A U2 kereskedelmi kód alatt easyJet UK, Switzerland és Europe

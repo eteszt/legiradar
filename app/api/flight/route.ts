@@ -15,10 +15,12 @@ import {
   trustedCommercialAlias,
 } from "./identifiers";
 import {
+  firstNonNullWithRetry,
   operatorPrefixesForCommercialFlight,
   rankRouteAircraft,
   routeSamplePoints,
   routesMatch,
+  standingCallsignsForRoute,
 } from "./route-scan";
 
 export const dynamic = "force-dynamic";
@@ -124,6 +126,7 @@ const liveFlightCache = new Map<string, {
   staleUntil: number;
   value: Record<string, unknown>;
 }>();
+const standingRouteCsvCache = new Map<string, { expiresAt: number; csv: string }>();
 
 function liveResponse(cacheKey: string, value: Record<string, unknown>) {
   const now = Date.now();
@@ -185,6 +188,37 @@ async function fetchProviderPoint(
   if (!response.ok) throw new Error(`${provider.baseUrl}: HTTP ${response.status}`);
   const payload = (await response.json()) as { ac?: AdsbAircraft[] };
   return (payload.ac || []).map((aircraft) => ({ aircraft, provider }));
+}
+
+async function fetchStandingRouteCallsigns(operatorPrefixes: string[], route: FlightRoute) {
+  const perOperator = await Promise.all(operatorPrefixes.map(async (prefix) => {
+    const normalizedPrefix = prefix.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(normalizedPrefix)) return [];
+    const cached = standingRouteCsvCache.get(normalizedPrefix);
+    let csv = cached && cached.expiresAt > Date.now() ? cached.csv : null;
+    if (csv == null) {
+      try {
+        const response = await fetch(
+          `https://raw.githubusercontent.com/vradarserver/standing-data/main/routes/schema-01/${normalizedPrefix[0]}/${normalizedPrefix}-all.csv`,
+          {
+            headers: { Accept: "text/csv,text/plain;q=0.9,*/*;q=0.8" },
+            cache: "no-store",
+            signal: AbortSignal.timeout(6500),
+          },
+        );
+        if (!response.ok) return [];
+        csv = await response.text();
+        standingRouteCsvCache.set(normalizedPrefix, {
+          expiresAt: Date.now() + 6 * 60 * 60_000,
+          csv,
+        });
+      } catch {
+        return [];
+      }
+    }
+    return standingCallsignsForRoute(csv, route.origin.icao, route.destination.icao);
+  }));
+  return Array.from(new Set(perOperator.flat())).slice(0, 30);
 }
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -772,15 +806,31 @@ async function findCommercialRouteAircraft(
   const operatorPrefixes = operatorPrefixesForCommercialFlight(commercialFlight, primaryIcao);
   if (!operatorPrefixes.length) return null;
 
-  const samples = routeSamplePoints(route.origin, route.destination);
-  const settled = await Promise.allSettled(
-    communityProviders.flatMap((provider) => samples.map((sample) => (
-      fetchProviderPoint(provider, sample.lat, sample.lon)
-    ))),
+  const standingCallsigns = await fetchStandingRouteCallsigns(operatorPrefixes, route);
+  const exactSettled = await Promise.allSettled(
+    standingCallsigns.flatMap((callsign) => communityProviders.map(async (provider) => ({
+      aircraft: await fetchProvider(provider.baseUrl, "callsign", callsign),
+      provider,
+    }))),
   );
-  const observations = settled.flatMap((result) => (
-    result.status === "fulfilled" ? result.value : []
+  let observations = exactSettled.flatMap((result) => (
+    result.status === "fulfilled" ? [result.value] : []
   ));
+
+  // Ha a közösségi standing-data már ismeri az adott útvonal napi hívójelét,
+  // pontos callsign-kéréssel elkerülhető a nagy és edge-érzékeny területi lista.
+  // Ismeretlen/friss hívójel esetén marad a geometriai útvonal-szkennelés.
+  if (!observations.length) {
+    const samples = routeSamplePoints(route.origin, route.destination);
+    const settled = await Promise.allSettled(
+      communityProviders.flatMap((provider) => samples.map((sample) => (
+        fetchProviderPoint(provider, sample.lat, sample.lon)
+      ))),
+    );
+    observations = settled.flatMap((result) => (
+      result.status === "fulfilled" ? result.value : []
+    ));
+  }
   const byHexOrCallsign = new Map<string, (typeof observations)[number]>();
   for (const observation of observations) {
     const hex = String(observation.aircraft.hex || "").trim().toUpperCase();
@@ -1179,10 +1229,22 @@ export async function GET(request: NextRequest) {
   // a találatot ugyanazzal a live-ID identitásforrással ellenőrizzük.
   if (resolved.commercialInput && resolved.flightNumber && resolved.routeLookup.route) {
     try {
-      const routeMatched = await findCommercialRouteAircraft(
+      const operatorFamily = operatorPrefixesForCommercialFlight(
         resolved.flightNumber,
-        resolved.routeLookup.route,
         resolved.resolvedAirlineIcao,
+      );
+      // A területi ADS-B indexek rövid ideig eltérő edge-pillanatképet adhatnak.
+      // Több operátorkódos családnál (U2 → EZY/EZS/EJU) ezért a hideg keresést
+      // legfeljebb háromszor ismételjük; siker után azonnal megállunk.
+      const maxRouteScanAttempts = operatorFamily.length > 1 ? 3 : 1;
+      const routeMatched = await firstNonNullWithRetry(
+        maxRouteScanAttempts,
+        () => findCommercialRouteAircraft(
+          resolved.flightNumber!,
+          resolved.routeLookup.route!,
+          resolved.resolvedAirlineIcao,
+        ),
+        300,
       );
       if (routeMatched) {
         let verifiedSchedule: ScheduledFlightInfo | null = null;

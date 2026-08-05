@@ -256,27 +256,39 @@ export function mapTargetedAirborneDetail(
 export async function findTargetedAirborne(identifiers: string[]): Promise<Fr24LiveFlight | null> {
   const wanted = Array.from(new Set(identifiers.map(normalizeFlightIdentifier).filter(Boolean)));
   for (const identifier of wanted) {
-    let search: unknown;
-    try {
-      search = await fetchJson(`https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(identifier)}&limit=20`);
-    } catch {
-      continue;
-    }
-    const results = nested(search, "results");
-    const exactLive = Array.isArray(results)
-      ? results.filter((item) => isExactLiveCandidate(item, wanted))
-      : [];
-    for (const candidate of exactLive) {
-      const id = text(object(candidate).id);
-      if (!id) continue;
+    // A FR24 keresési index több edge-pillanatképből szolgál ki; ugyanaz az aktív
+    // járat egy friss példányon megjelenhet, miközben egy másikon rövid ideig még
+    // hiányzik. Az üres, de technikailag sikeres választ ezért cache-busterrel is
+    // újrapróbáljuk, nem csak a hálózati/HTTP hibákat.
+    for (let snapshotAttempt = 0; snapshotAttempt < 3; snapshotAttempt += 1) {
+      let search: unknown;
+      const cacheBuster = `${Date.now()}-${snapshotAttempt}`;
       try {
-        const detail = await fetchJson(
-          `https://data-live.flightradar24.com/clickhandler/?version=1.5&flight=${encodeURIComponent(id)}`,
+        search = await fetchJson(
+          `https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(identifier)}&limit=20&_=${cacheBuster}`,
         );
-        const mapped = mapTargetedAirborneDetail(detail, candidate, Date.now(), wanted);
-        if (mapped) return mapped;
       } catch {
-        // Egy hibás/stale live-ID után a következő pontos jelöltet is megvizsgáljuk.
+        continue;
+      }
+      const results = nested(search, "results");
+      const exactLive = Array.isArray(results)
+        ? results.filter((item) => isExactLiveCandidate(item, wanted))
+        : [];
+      for (const candidate of exactLive) {
+        const id = text(object(candidate).id);
+        if (!id) continue;
+        try {
+          const detail = await fetchJson(
+            `https://data-live.flightradar24.com/clickhandler/?version=1.5&flight=${encodeURIComponent(id)}&_=${cacheBuster}`,
+          );
+          const mapped = mapTargetedAirborneDetail(detail, candidate, Date.now(), wanted);
+          if (mapped) return mapped;
+        } catch {
+          // Egy hibás/stale live-ID után a következő pontos jelöltet is megvizsgáljuk.
+        }
+      }
+      if (snapshotAttempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (snapshotAttempt + 1)));
       }
     }
   }

@@ -1,11 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  firstNonNullWithRetry,
   operatorPrefixesForCommercialFlight,
   rankRouteAircraft,
   routeSamplePoints,
   routesMatch,
+  standingCallsignsForRoute,
 } from "../app/api/flight/route-scan.ts";
+
+test("standing route data yields every exact-direction operational callsign", () => {
+  const csv = [
+    "EZS128G,EZS,128G,EZS,LFKF-LFSB",
+    "EZS792D,EZS,792D,EZS,LFKF-LFSB",
+    "EZS000X,EZS,000X,EZS,LFSB-LFKF",
+    "EZS999Z,EZS,999Z,EZS,LFPG-LFKF-LFSB-LSGG",
+  ].join("\n");
+
+  assert.deepEqual(
+    standingCallsignsForRoute(csv, "LFKF", "LFSB"),
+    ["EZS128G", "EZS792D", "EZS999Z"],
+  );
+  assert.deepEqual(standingCallsignsForRoute(csv, "LFSB", "LFKF"), ["EZS000X"]);
+});
+
+test("cold route scans retry transient misses and stop at the first exact result", async () => {
+  const attempts: number[] = [];
+  const result = await firstNonNullWithRetry(3, async (attempt) => {
+    attempts.push(attempt);
+    return attempt === 1 ? "EZS792D" : null;
+  });
+
+  assert.equal(result, "EZS792D");
+  assert.deepEqual(attempts, [0, 1]);
+});
+
+test("cold route scans remain bounded when every provider snapshot misses", async () => {
+  let attempts = 0;
+  const result = await firstNonNullWithRetry(3, async () => {
+    attempts += 1;
+    return null;
+  });
+
+  assert.equal(result, null);
+  assert.equal(attempts, 3);
+});
 
 test("U2 commercial flights search every current easyJet operating prefix", () => {
   assert.deepEqual(
