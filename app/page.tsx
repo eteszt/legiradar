@@ -4,6 +4,7 @@ import { type CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef,
 import { geoGraticule10, geoInterpolate, geoMercator, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import world from "world-atlas/countries-110m.json";
+import { isFlightLevelInHazardLayer, isRelevantFlightLevelTurbulence } from "./weather-relevance";
 
 type Telemetry = {
   flight: string;
@@ -482,9 +483,7 @@ function routeWeatherImpacts(features: TurbulenceFeature[], telemetry: WeatherFl
 
     const base = flightLevelNumber(weather.properties.base);
     const top = flightLevelNumber(weather.properties.top);
-    const altitudeRelevant = currentFlightLevel == null || (
-      (base == null || currentFlightLevel >= base) && (top == null || currentFlightLevel <= top)
-    );
+    const altitudeRelevant = isFlightLevelInHazardLayer(currentFlightLevel, base, top);
 
     return runs.map((run, runIndex) => {
       const entry = run[0].sample;
@@ -644,7 +643,7 @@ function FlightConditionsPanel({
   error: string | null;
   updatedAt: string | null;
 }) {
-  const relevant = impacts.filter((impact) => impact.altitudeRelevant && impact.temporallyRelevant);
+  const relevant = impacts.filter(isRelevantFlightLevelTurbulence);
   const severe = relevant.some((impact) => severityLevel(impact) === "severe");
   const preflight = Boolean(telemetry.preflight);
   const weatherIssuedMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
@@ -671,7 +670,7 @@ function FlightConditionsPanel({
       : relevant.length > 0
       ? `${relevant.length} várhatóan releváns veszélyszakasz található a ${preflight ? "tervezett" : "hátralévő"} útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában.`
       : impacts.length > 0
-        ? `A folyosó ${impacts.length} jelzett területet érint, de azok várhatóan nem aktívak az odaéréskor vagy nem a vizsgált repülési szintre vonatkoznak.`
+        ? "Az útvonal más, időben vagy magasságban nem releváns jelzett területet érinthet, de nincs részletezendő turbulencia a vizsgált repülési szinten."
         : preflight
           ? `A jelenlegi SIGMET és G-AIRMET közlemények alapján a tervezett útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs az utazás várható idejére érvényes turbulenciajelzés.`
           : `A hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs aktuálisan releváns turbulenciajelzés.`);
@@ -691,7 +690,7 @@ function FlightConditionsPanel({
         <div><span>AKTÍV TALÁLAT</span><strong>{loading ? "—" : relevant.length}</strong></div>
         <div><span>{preflight ? "ELEMZÉS" : "REPÜLÉSI SZINT"}</span><strong>{preflight ? "INDULÁS ELŐTT" : telemetry.altitudeM == null ? "—" : `FL${Math.round(telemetry.altitudeM / 30.48)}`}</strong></div>
       </div>
-      {!loading && impacts.slice(0, 4).map((impact) => {
+      {!loading && relevant.slice(0, 4).map((impact) => {
         const actuallyRelevant = impact.altitudeRelevant && impact.temporallyRelevant;
         const severity = turbulenceSeverity(impact);
         return (
@@ -741,7 +740,7 @@ function FlightConditionsPanel({
           </article>
         );
       })}
-      {impacts.length > 4 && <small className="more-hazards">További {impacts.length - 4} útvonal-metszés a térképen látható.</small>}
+      {relevant.length > 4 && <small className="more-hazards">További {relevant.length - 4} releváns turbulenciaszakasz a térképen látható.</small>}
       <footer>NOAA/NWS SIGMET és G-AIRMET · {updatedAt ? `frissítve ${new Date(updatedAt).toLocaleTimeString("hu-HU", { timeZone: BUDAPEST_TIME_ZONE, hour: "2-digit", minute: "2-digit" })}` : "frissítés folyamatban"} · {preflight ? "előzetes útvonalbecslés, indulás előtt frissítendő" : "döntéstámogató becslés"}</footer>
     </section>
   );
@@ -2088,7 +2087,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051859</small>
+          <small className="app-version">202608051926</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
