@@ -898,12 +898,14 @@ function AirportWeatherCard({
   role,
   airport,
   weather,
+  currentConditions,
   loading,
   error,
 }: {
   role: "INDULÁSI" | "ÉRKEZÉSI";
   airport: RouteAirport;
   weather: AirportWeather | null;
+  currentConditions: boolean;
   loading: boolean;
   error: string | null;
 }) {
@@ -943,6 +945,13 @@ function AirportWeatherCard({
   );
   const forecastVisibility = metricVisibility(targetPeriod?.visibility || null);
   const forecastPhenomenon = aviationPhenomenon(targetPeriod?.weather) || "Nem jelez jelentős csapadékot";
+  const current = weather?.current || null;
+  const currentWind = metricWind(
+    current?.windDirectionDeg ?? null,
+    current?.windVariable || false,
+    current?.windSpeedKt ?? null,
+  );
+  const currentVisibility = metricVisibility(current?.visibility || null);
 
   return (
     <article className="airport-weather-card plain-weather-card">
@@ -961,7 +970,29 @@ function AirportWeatherCard({
         <p className="airport-weather-state">Ehhez a repülőtérhez nem érkezett időjárási adat.</p>
       ) : (
         <>
-          {forecastTargetAt ? (
+          {currentConditions ? (
+            <section className="airport-forecast-weather plain-weather-section">
+              <div className="airport-weather-section-title">
+                <span>AKTUÁLIS METAR</span>
+                <small>{current?.observedAt ? `${budapestDateTime(current.observedAt)} · CET` : "észlelési idő nem ismert"}</small>
+              </div>
+              {!current ? (
+                <p className="airport-weather-state">Aktuális METAR-adat nem érhető el.</p>
+              ) : (
+                <>
+                  <strong className="airport-condition-summary plain">
+                    {[current.flightCategory, current.cloudSummary].filter(Boolean).join(" · ") || "Aktuális repülőtéri időjárás"}
+                  </strong>
+                  <div className="plain-weather-metrics">
+                    <div className="temperature"><span>HŐMÉRSÉKLET</span><strong>{current.temperatureC == null ? "—" : `${fmt(current.temperatureC, 1)} °C`}</strong><small>{current.dewpointC == null ? "nincs harmatpontadat" : `harmatpont ${fmt(current.dewpointC, 1)} °C`}</small></div>
+                    <div className="wind"><span>SZÉL</span><strong>{currentWind.value}</strong><small>{currentWind.detail}</small></div>
+                    <div className="visibility"><span>LÁTÓTÁVOLSÁG</span><strong>{currentVisibility.value}</strong><small>{currentVisibility.detail}</small></div>
+                    <div className="precipitation"><span>LÉGNYOMÁS</span><strong>{current.pressureHpa == null ? "—" : `${fmt(current.pressureHpa)} hPa`}</strong><small>{current.flightCategory ? `${current.flightCategory} repülési kategória` : "kategória nem ismert"}</small></div>
+                  </div>
+                </>
+              )}
+            </section>
+          ) : forecastTargetAt ? (
             <section className="airport-forecast-weather plain-weather-section">
               <div className="airport-weather-section-title">
                 <span>{role === "INDULÁSI" ? "INDULÁSI" : "ÉRKEZÉSI"} IDŐPONTRA ELŐREJELZETT</span>
@@ -1003,7 +1034,13 @@ function AirportWeatherCard({
             <p className="airport-weather-state">A járat időpontja nem ismert, ezért időpontra illesztett előrejelzés nem kérhető le.</p>
           )}
 
-          {forecast && (
+          {currentConditions && current?.raw && (
+            <details className="professional-weather-details">
+              <summary>Repülésmeteorológiai részletek <span>METAR</span></summary>
+              <div className="professional-weather-body"><section><h4>Aktuális METAR</h4><code>{current.raw}</code></section></div>
+            </details>
+          )}
+          {!currentConditions && forecast && (
             <details className="professional-weather-details">
               <summary>Repülésmeteorológiai részletek <span>TAF</span></summary>
               <div className="professional-weather-body">
@@ -1042,6 +1079,7 @@ function AirportWeatherPopover({
   airport,
   weather,
   targetAt,
+  currentConditions = false,
   loading,
   error,
 }: {
@@ -1049,6 +1087,7 @@ function AirportWeatherPopover({
   airport: RouteAirport;
   weather: AirportWeather | null;
   targetAt: string | null;
+  currentConditions?: boolean;
   loading: boolean;
   error: string | null;
 }) {
@@ -1112,6 +1151,7 @@ function AirportWeatherPopover({
             role={role}
             airport={airport}
             weather={weather}
+            currentConditions={currentConditions}
             loading={loading}
             error={error}
           />
@@ -1977,7 +2017,7 @@ export default function Home() {
     ? `${weatherFlight.journey.origin.icao},${weatherFlight.journey.destination.icao}`
     : "";
   const airportWeatherTargets = weatherFlight
-    ? [weatherFlight.journey.estimatedDepartureAt, weatherFlight.journey.estimatedArrivalAt]
+    ? [weatherFlight.preflight ? weatherFlight.journey.estimatedDepartureAt : null, weatherFlight.journey.estimatedArrivalAt]
     : [null, null];
   const airportWeatherKey = airportWeatherIds
     ? `${airportWeatherIds}|${airportWeatherTargets.map((value) => value || "current").join("|")}`
@@ -2087,7 +2127,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051926</small>
+          <small className="app-version">202608051957</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
@@ -2167,6 +2207,7 @@ export default function Home() {
                       airport={weatherFlight.journey.origin}
                       weather={airportWeather.find((item) => item.icao === weatherFlight.journey.origin.icao) || null}
                       targetAt={weatherFlight.journey.estimatedDepartureAt}
+                      currentConditions={status === "active-no-signal"}
                       loading={airportWeatherLoading}
                       error={airportWeatherError}
                     />
@@ -2235,6 +2276,7 @@ export default function Home() {
                   airport={weatherFlight.journey.origin}
                   weather={airportWeather.find((item) => item.icao === weatherFlight.journey.origin.icao) || null}
                   targetAt={weatherFlight.journey.estimatedDepartureAt}
+                  currentConditions
                   loading={airportWeatherLoading}
                   error={airportWeatherError}
                 />

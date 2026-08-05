@@ -26,6 +26,7 @@ import {
   routesMatch,
   standingCallsignsForRoute,
 } from "./route-scan";
+import { plausibleFlightDurationMinutes, reconciledArrivalTime } from "./journey-timing";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -991,11 +992,7 @@ function shape(
     const providerDurationMinutes = providerDepartureAt && providerArrivalAt
       ? Math.round((providerArrivalAt.getTime() - providerDepartureAt.getTime()) / 60_000)
       : null;
-    const plausibleDurationMinutes = providerDurationMinutes != null
-      && providerDurationMinutes >= 20
-      && providerDurationMinutes <= 24 * 60
-      ? providerDurationMinutes
-      : null;
+    const plausibleDurationMinutes = plausibleFlightDurationMinutes(providerDurationMinutes, totalKm);
     const routeProgress = totalKm > 0 ? flownKm / totalKm : null;
     const progressElapsedMinutes = plausibleDurationMinutes != null && routeProgress != null
       ? Math.round(plausibleDurationMinutes * routeProgress)
@@ -1012,9 +1009,14 @@ function shape(
     const departureAt = providerTimingConflictsWithPosition || !providerDepartureAt
       ? new Date(now - elapsedMinutes * 60_000)
       : providerDepartureAt;
-    const arrivalAt = providerTimingConflictsWithPosition && plausibleDurationMinutes != null
-      ? new Date(departureAt.getTime() + plausibleDurationMinutes * 60_000)
-      : providerArrivalAt;
+    const arrivalAt = reconciledArrivalTime(
+      now,
+      departureAt.getTime(),
+      providerArrivalAt?.getTime() ?? null,
+      providerTimingConflictsWithPosition,
+      plausibleDurationMinutes,
+      geographicRemainingMinutes,
+    );
     const remainingMinutes = arrivalAt
       ? Math.max(0, Math.round((arrivalAt.getTime() - now) / 60_000))
       : geographicRemainingMinutes;
