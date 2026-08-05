@@ -28,6 +28,7 @@ import {
   standingCallsignsForRoute,
 } from "./route-scan";
 import { plausibleFlightDurationMinutes, reconciledArrivalTime } from "./journey-timing";
+import { withFallbackAirlineName } from "./airline-name";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -1115,6 +1116,7 @@ export async function GET(request: NextRequest) {
         cacheHit: primaryRouteLookup.cacheHit,
       }
     : null;
+  const adsbdbAirlineName = primaryRouteLookup.route?.airlineName || null;
 
   // Az ADSBDB exact IATA↔ICAO aliaspárja már a legelső élő identity
   // lekérdezéshez rendelkezésre áll. A provider kiesése esetén a korábbi
@@ -1131,7 +1133,10 @@ export async function GET(request: NextRequest) {
     try {
       const targeted = await findTargetedAirborne(commercialIdentityQueries);
       if (targeted) {
-        const route = routeFromTargetedLive(targeted, null) || primaryRouteLookup.route;
+        const route = withFallbackAirlineName(
+          routeFromTargetedLive(targeted, null),
+          adsbdbAirlineName,
+        ) || primaryRouteLookup.route;
         const data = shape(
           aircraftFromTargetedLive(targeted),
           targeted.flight || flight,
@@ -1186,7 +1191,10 @@ export async function GET(request: NextRequest) {
             };
           if (identity?.flight === wantedCommercialFlight && identity.callsign === effectiveCallsign) {
             const scheduled = scheduledInfoFromFr24({ ...occurrence, callsign: effectiveCallsign });
-            const route = identity.route || await routeFromSchedule(scheduled);
+            const route = withFallbackAirlineName(
+              identity.route || await routeFromSchedule(scheduled),
+              scheduled.airlineName || adsbdbAirlineName,
+            );
             const data = shape(
               found.aircraft,
               identity.flight,
@@ -1225,9 +1233,14 @@ export async function GET(request: NextRequest) {
           identityResolution,
         }, { status: 404 });
       }
-      const route = await routeFromSchedule(scheduled);
+      const airlineName = scheduled.airlineName || adsbdbAirlineName;
+      const enrichedScheduled = { ...scheduled, airlineName };
+      const route = withFallbackAirlineName(
+        await routeFromSchedule(enrichedScheduled),
+        airlineName,
+      ) || primaryRouteLookup.route;
       return NextResponse.json({
-        scheduled: { ...scheduled, route },
+        scheduled: { ...enrichedScheduled, route },
         searchedCallsigns: candidates,
         identityResolution,
       });
@@ -1245,10 +1258,10 @@ export async function GET(request: NextRequest) {
   try {
     const targeted = await findTargetedAirborne([flight, ...candidates]);
     if (targeted) {
-      const route = routeFromTargetedLive(
-        targeted,
-        resolved.routeLookup.route?.airlineName || null,
-      );
+      const route = withFallbackAirlineName(
+        routeFromTargetedLive(targeted, null),
+        resolved.routeLookup.route?.airlineName || adsbdbAirlineName,
+      ) || resolved.routeLookup.route;
       const data = shape(
         aircraftFromTargetedLive(targeted),
         targeted.flight || resolved.flightNumber || flight,
@@ -1316,9 +1329,10 @@ export async function GET(request: NextRequest) {
         .includes(liveIdentity.flight);
     const trustedSchedule = scheduleMatchesLiveIdentity ? verifiedSchedule : null;
     const trustedScheduleRoute = scheduleMatchesLiveIdentity ? verifiedRoute : null;
-    const effectiveRoute = liveIdentity?.route
-      || trustedScheduleRoute
-      || routeLookup.route;
+    const effectiveRoute = withFallbackAirlineName(
+      liveIdentity?.route || trustedScheduleRoute || routeLookup.route,
+      resolved.routeLookup.route?.airlineName || adsbdbAirlineName,
+    );
     const data = shape(
       found.aircraft,
       resolved.flightNumber || trustedSchedule?.flight || liveIdentity?.flight || flight,
@@ -1427,7 +1441,10 @@ export async function GET(request: NextRequest) {
           routeMatched.aircraft,
           routeMatched.identity.flight,
           `${routeMatched.provider.label} · útvonal menti, pontos élő járatazonosítással ellenőrizve`,
-          routeMatched.route,
+          withFallbackAirlineName(
+            routeMatched.route,
+            resolved.routeLookup.route?.airlineName || adsbdbAirlineName,
+          ),
           verifiedSchedule,
         );
         if (data) {
@@ -1454,9 +1471,18 @@ export async function GET(request: NextRequest) {
   // koordinátát közöl. Ilyenkor ezt használjuk tartalékként.
   try {
     const schedule = await fetchScheduledFlight(scheduleFlight, candidates);
-    const scheduledRoute = await routeFromSchedule(schedule);
-    const liveData = schedule
-      ? shapeScheduledLive(schedule, schedule.flight || resolved.flightNumber || flight, scheduledRoute)
+    const airlineName = schedule?.airlineName || adsbdbAirlineName;
+    const enrichedSchedule = schedule ? { ...schedule, airlineName } : null;
+    const scheduledRoute = withFallbackAirlineName(
+      await routeFromSchedule(enrichedSchedule),
+      airlineName,
+    ) || primaryRouteLookup.route;
+    const liveData = enrichedSchedule
+      ? shapeScheduledLive(
+          enrichedSchedule,
+          enrichedSchedule.flight || resolved.flightNumber || flight,
+          scheduledRoute,
+        )
       : null;
     if (liveData) {
       return liveResponse(flight, {
@@ -1467,9 +1493,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    if (schedule) {
+    if (enrichedSchedule) {
       return NextResponse.json({
-        scheduled: { ...schedule, route: scheduledRoute },
+        scheduled: { ...enrichedSchedule, route: scheduledRoute },
         searchedCallsigns: candidates,
         identityResolution,
       });
