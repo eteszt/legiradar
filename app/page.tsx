@@ -1103,6 +1103,116 @@ function AltitudeChart({ samples, currentAltitude }: { samples: AltitudeSample[]
   );
 }
 
+function PlannedRouteMap({ flight, activeWithoutSignal }: { flight: WeatherFlight; activeWithoutSignal: boolean }) {
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const dimensions = { width: 1100, height: 740 };
+  const { origin, destination } = flight.journey;
+  const routeCoordinates = greatCircleCoordinates(
+    [origin.lon, origin.lat],
+    [destination.lon, destination.lat],
+    241,
+  );
+  const routeMidpoint = routeCoordinates[Math.floor(routeCoordinates.length / 2)];
+  const projection = geoMercator()
+    .rotate([-routeMidpoint[0], 0])
+    .fitExtent(
+      [[100, 90], [1000, 650]],
+      { type: "LineString", coordinates: routeCoordinates } as never,
+    );
+  const path = geoPath(projection);
+  const countries = feature(
+    world as never,
+    (world.objects as unknown as { countries: never }).countries,
+  );
+  const originPoint = projection([origin.lon, origin.lat]);
+  const destinationPoint = projection([destination.lon, destination.lat]);
+  const routePath = path({ type: "LineString", coordinates: routeCoordinates } as never) ?? "";
+  const mapTransform = `translate(${pan.x} ${pan.y}) translate(${dimensions.width / 2} ${dimensions.height / 2}) scale(${zoom}) translate(${-dimensions.width / 2} ${-dimensions.height / 2})`;
+
+  function changeZoom(factor: number) {
+    setZoom((value) => Math.min(10, Math.max(.2, value * factor)));
+  }
+
+  return (
+    <div className="map planned-route-map">
+      <svg
+        viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+        role="img"
+        aria-label={`A(z) ${origin.iata || origin.icao} és ${destination.iata || destination.icao} közötti tervezett útvonal`}
+        onWheel={(event) => {
+          event.preventDefault();
+          changeZoom(event.deltaY < 0 ? 1.25 : .8);
+        }}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag) return;
+          const scale = dimensions.width / Math.max(1, event.currentTarget.clientWidth);
+          setPan({
+            x: drag.panX + (event.clientX - drag.x) * scale,
+            y: drag.panY + (event.clientY - drag.y) * scale,
+          });
+        }}
+        onPointerUp={(event) => {
+          dragRef.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onPointerCancel={() => { dragRef.current = null; }}
+      >
+        <defs>
+          <radialGradient id="plannedMapGlow">
+            <stop offset="0" stopColor="#123551" stopOpacity=".5" />
+            <stop offset="1" stopColor="#06101d" stopOpacity="0" />
+          </radialGradient>
+          <filter id="plannedRouteGlow">
+            <feGaussianBlur stdDeviation="5" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <rect width="1100" height="740" fill="#06101d" />
+        <g className="map-viewport" transform={mapTransform}>
+          <circle cx="550" cy="370" r="430" fill="url(#plannedMapGlow)" />
+          <path className="graticule" d={path(geoGraticule10()) ?? ""} />
+          <path className="countries" d={path(countries) ?? ""} />
+          <path className="flight-route planned" d={routePath} filter="url(#plannedRouteGlow)">
+            <title>Tervezett nagykörű útvonal</title>
+          </path>
+          {originPoint && (
+            <g className="airport-point planned-origin">
+              <circle cx={originPoint[0]} cy={originPoint[1]} r="7" />
+              <text x={originPoint[0] + 12} y={originPoint[1] - 10}>{origin.city} · {origin.iata || origin.icao}</text>
+            </g>
+          )}
+          {destinationPoint && (
+            <g className="airport-point planned-destination">
+              <circle cx={destinationPoint[0]} cy={destinationPoint[1]} r="7" />
+              <text x={destinationPoint[0] + 12} y={destinationPoint[1] - 10}>{destination.city} · {destination.iata || destination.icao}</text>
+            </g>
+          )}
+        </g>
+      </svg>
+      <div className="map-controls" aria-label="Térkép nagyítása">
+        <button onClick={() => changeZoom(1.5)} aria-label="Nagyítás">+</button>
+        <button onClick={() => changeZoom(1 / 1.5)} aria-label="Kicsinyítés">−</button>
+        <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="Alaphelyzet">◎</button>
+      </div>
+      <div className="planned-route-badge">
+        <span>{activeWithoutSignal ? "AKTÍV · POZÍCIÓ NEM ELÉRHETŐ" : "MENETREND SZERINTI JÁRAT"}</span>
+        <strong>TERVEZETT ÚTVONAL</strong>
+        <small>{origin.iata || origin.icao} → {destination.iata || destination.icao}</small>
+      </div>
+    </div>
+  );
+}
+
 function RadarMap({
   telemetry,
   trail,
@@ -1679,7 +1789,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608042219</small>
+          <small className="app-version">202608050823</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
@@ -1702,7 +1812,13 @@ export default function Home() {
 
       <section className="workspace">
         <div className="map-panel">
-          {scheduled ? (
+          {scheduled && weatherFlight ? (
+            <PlannedRouteMap
+              key={`${scheduled.flight}-${scheduled.scheduledDepartureAt || "scheduled"}`}
+              flight={weatherFlight}
+              activeWithoutSignal={status === "active-no-signal"}
+            />
+          ) : scheduled ? (
             <div className="scheduled-map">
               <div className="scheduled-plane">✈</div>
               <span>{status === "active-no-signal" ? "AKTÍV, DE A POZÍCIÓ NEM ELÉRHETŐ" : "MÉG NEM SZÁLLT FEL"}</span>

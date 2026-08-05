@@ -285,8 +285,29 @@ button:focus-visible, input:focus-visible {
 .countries { fill: #0b2133; stroke: #2b4b63; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .flight-route { fill: none; stroke: var(--cyan); stroke-width: 3.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .flight-route.future { opacity: .58; stroke-dasharray: 9 10; filter: none; }
+.flight-route.planned { stroke-width: 4; stroke-dasharray: 12 9; }
 .airport-point circle { fill: var(--cyan); stroke: white; stroke-width: 1.5; }
 .airport-point text { fill: white; font-size: 17px; paint-order: stroke; stroke: #06101d; stroke-width: 5px; stroke-linejoin: round; }
+.planned-destination circle { fill: #ffd36a; }
+.planned-route-badge {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  top: 18px;
+  display: grid;
+  gap: 3px;
+  min-width: 210px;
+  padding: 9px 16px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(53, 214, 233, .42);
+  border-radius: 9px;
+  background: rgba(4, 13, 23, .9);
+  text-align: center;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .28);
+}
+.planned-route-badge span { color: #8daab8; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.planned-route-badge strong { color: var(--cyan); font-size: 12px; letter-spacing: .14em; }
+.planned-route-badge small { color: white; font-size: 13px; font-weight: 800; }
 .plane-marker { transition: transform .9s ease-out; }
 .plane-marker circle:first-child { fill: rgba(53, 214, 233, .08); stroke: rgba(53, 214, 233, .25); }
 .plane-marker circle:nth-child(2) { fill: rgba(53, 214, 233, .14); stroke: rgba(53, 214, 233, .5); }
