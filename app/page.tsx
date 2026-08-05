@@ -6,6 +6,15 @@ import { feature } from "topojson-client";
 import world from "world-atlas/countries-110m.json";
 import { isFlightLevelInHazardLayer, isRelevantFlightLevelTurbulence } from "./weather-relevance";
 
+type AirlineMetadata = {
+  name: string | null;
+  iata: string | null;
+  icao: string | null;
+  radioCallsign: string | null;
+  country: string | null;
+  countryIso: string | null;
+};
+
 type Telemetry = {
   flight: string;
   callsign: string;
@@ -49,6 +58,7 @@ type Telemetry = {
     origin: RouteAirport;
     destination: RouteAirport;
     airlineName: string | null;
+    airline?: AirlineMetadata | null;
     flownKm: number;
     remainingKm: number;
     totalKm: number;
@@ -90,6 +100,7 @@ type ScheduledFlight = {
     origin: RouteAirport;
     destination: RouteAirport;
     airlineName: string | null;
+    airline?: AirlineMetadata | null;
   } | null;
 };
 
@@ -314,6 +325,30 @@ function airlineBrand(name: string | null | undefined, callsign: string | null |
     ? "✈"
     : displayName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   return { name: displayName, monogram, ...matched };
+}
+
+function airlineIdentityLine(airline: AirlineMetadata | null | undefined) {
+  if (!airline) return null;
+  const codes = Array.from(new Set([airline.iata, airline.icao].filter((code): code is string => Boolean(code))));
+  const parts: string[] = [];
+  if (codes.length) parts.push(codes.join(" / "));
+  if (airline.radioCallsign) parts.push(`Hívónév: ${airline.radioCallsign}`);
+  const countryIso = airline.countryIso?.toUpperCase();
+  let countryName = airline.country;
+  if (countryIso && /^[A-Z]{2}$/.test(countryIso)) {
+    try {
+      countryName = new Intl.DisplayNames(["hu"], { type: "region" }).of(countryIso) || countryName;
+    } catch {
+      // Régebbi böngészőben az ADSBDB eredeti országneve marad látható.
+    }
+  }
+  if (countryName) {
+    const flag = countryIso && /^[A-Z]{2}$/.test(countryIso)
+      ? String.fromCodePoint(...countryIso.split("").map((letter) => 127397 + letter.charCodeAt(0)))
+      : "";
+    parts.push(`${flag} ${countryName}`.trim());
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
 
 function flightLevelNumber(value: string) {
@@ -1971,7 +2006,7 @@ export default function Home() {
       return { ...telemetry, journey: telemetry.journey, preflight: false };
     }
     if (!scheduled?.route) return null;
-    const { origin, destination, airlineName } = scheduled.route;
+    const { origin, destination, airlineName, airline } = scheduled.route;
     const totalKm = greatCircleKm([origin.lon, origin.lat], [destination.lon, destination.lat]);
     const departureAt = scheduled.actualDepartureAt
       || scheduled.estimatedDepartureAt
@@ -1997,6 +2032,7 @@ export default function Home() {
         origin,
         destination,
         airlineName,
+        airline,
         flownKm: 0,
         remainingKm: Math.round(totalKm),
         totalKm: Math.round(totalKm),
@@ -2115,6 +2151,9 @@ export default function Home() {
     telemetry?.journey?.airlineName || scheduled?.airlineName,
     telemetry?.callsign || scheduled?.callsign,
   );
+  const airlineIdentity = airlineIdentityLine(
+    telemetry?.journey?.airline || scheduled?.route?.airline,
+  );
   const panelStyle = {
     "--airline-color": brand.primary,
     "--airline-secondary": brand.secondary,
@@ -2127,7 +2166,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608052143</small>
+          <small className="app-version">202608052253</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
@@ -2194,7 +2233,13 @@ export default function Home() {
             <>
               <div className="flight-summary">
                 <div className="summary-top">
-                  <div className="airline-brand"><b>{brand.monogram}</b><span>{brand.name}</span></div>
+                  <div className="airline-brand">
+                    <b>{brand.monogram}</b>
+                    <div className="airline-copy">
+                      <span>{brand.name}</span>
+                      {airlineIdentity ? <small>{airlineIdentity}</small> : null}
+                    </div>
+                  </div>
                   <button className="share-button" onClick={() => void shareFlight()} type="button">↗ {shareLabel}</button>
                 </div>
                 <div className="eyebrow">{status === "active-no-signal" ? "AKTÍV JÁRAT · NYILVÁNOS POZÍCIÓ NÉLKÜL" : "KÖVETKEZŐ INDULÁS"}</div>
@@ -2263,7 +2308,13 @@ export default function Home() {
           <>
           <div className="flight-summary">
             <div className="summary-top">
-              <div className="airline-brand"><b>{brand.monogram}</b><span>{brand.name}</span></div>
+              <div className="airline-brand">
+                    <b>{brand.monogram}</b>
+                    <div className="airline-copy">
+                      <span>{brand.name}</span>
+                      {airlineIdentity ? <small>{airlineIdentity}</small> : null}
+                    </div>
+                  </div>
               <button className="share-button" onClick={() => void shareFlight()} type="button">↗ {shareLabel}</button>
             </div>
             <div className="eyebrow">AKTUÁLIS JÁRAT · ADS-B HÍVÓJEL</div>

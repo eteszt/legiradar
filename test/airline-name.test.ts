@@ -1,29 +1,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { withFallbackAirlineName } from "../app/api/flight/airline-name.ts";
+import { withFallbackAirline } from "../app/api/flight/airline-name.ts";
 
 const route = {
   origin: { iata: "FRA" },
   destination: { iata: "BKK" },
   airlineName: null,
 };
+const condorRoute = {
+  ...route,
+  airlineName: "Condor Flugdienst",
+  airline: {
+    name: "Condor Flugdienst",
+    iata: "DE",
+    icao: "CFG",
+    radioCallsign: "CONDOR",
+    country: "Germany",
+    countryIso: "DE",
+  },
+};
 
-test("ADSBDB airline name fills a live route that has no airline metadata", () => {
+test("ADSBDB airline identity fills an otherwise anonymous live route", () => {
   assert.deepEqual(
-    withFallbackAirlineName(route, "Condor Flugdienst"),
-    { ...route, airlineName: "Condor Flugdienst" },
+    withFallbackAirline(route, condorRoute),
+    { ...route, airlineName: "Condor Flugdienst", airline: condorRoute.airline },
   );
 });
 
-test("existing airline metadata remains authoritative", () => {
+test("matching provider name can be enriched with ADSBDB airline identity", () => {
+  const providerRoute = { ...route, airlineName: "condor flugdienst" };
+  assert.deepEqual(
+    withFallbackAirline(providerRoute, condorRoute),
+    { ...providerRoute, airline: condorRoute.airline },
+  );
+});
+
+test("different provider airline remains authoritative and is not mixed with ADSBDB metadata", () => {
   const providerRoute = { ...route, airlineName: "Current Provider Airline" };
-  assert.equal(
-    withFallbackAirlineName(providerRoute, "Condor Flugdienst"),
-    providerRoute,
-  );
+  assert.equal(withFallbackAirline(providerRoute, condorRoute), providerRoute);
 });
 
-test("missing route or blank fallback remains unchanged", () => {
-  assert.equal(withFallbackAirlineName(null, "Condor Flugdienst"), null);
-  assert.equal(withFallbackAirlineName(route, "  "), route);
+test("missing route or fallback remains unchanged", () => {
+  assert.equal(withFallbackAirline(null, condorRoute), null);
+  assert.equal(withFallbackAirline(route, null), route);
 });

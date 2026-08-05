@@ -28,7 +28,7 @@ import {
   standingCallsignsForRoute,
 } from "./route-scan";
 import { plausibleFlightDurationMinutes, reconciledArrivalTime } from "./journey-timing";
-import { withFallbackAirlineName } from "./airline-name";
+import { withFallbackAirline, type AirlineMetadata } from "./airline-name";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -47,6 +47,7 @@ type FlightRoute = {
   origin: RouteAirport;
   destination: RouteAirport;
   airlineName: string | null;
+  airline?: AirlineMetadata | null;
 };
 type RouteLookup = {
   route: FlightRoute | null;
@@ -264,6 +265,14 @@ function routeFromRecord(route: AdsbdbFlightRouteRecord | null | undefined): Fli
     origin: airport(origin, originLat, originLon),
     destination: airport(destination, destinationLat, destinationLon),
     airlineName: route?.airline?.name ? String(route.airline.name) : null,
+    airline: route?.airline ? {
+      name: route.airline.name ? String(route.airline.name) : null,
+      iata: route.airline.iata ? String(route.airline.iata).toUpperCase() : null,
+      icao: route.airline.icao ? String(route.airline.icao).toUpperCase() : null,
+      radioCallsign: route.airline.callsign ? String(route.airline.callsign).toUpperCase() : null,
+      country: route.airline.country ? String(route.airline.country) : null,
+      countryIso: route.airline.country_iso ? String(route.airline.country_iso).toUpperCase() : null,
+    } : null,
   };
 }
 
@@ -1133,9 +1142,9 @@ export async function GET(request: NextRequest) {
     try {
       const targeted = await findTargetedAirborne(commercialIdentityQueries);
       if (targeted) {
-        const route = withFallbackAirlineName(
+        const route = withFallbackAirline(
           routeFromTargetedLive(targeted, null),
-          adsbdbAirlineName,
+          primaryRouteLookup.route,
         ) || primaryRouteLookup.route;
         const data = shape(
           aircraftFromTargetedLive(targeted),
@@ -1191,9 +1200,9 @@ export async function GET(request: NextRequest) {
             };
           if (identity?.flight === wantedCommercialFlight && identity.callsign === effectiveCallsign) {
             const scheduled = scheduledInfoFromFr24({ ...occurrence, callsign: effectiveCallsign });
-            const route = withFallbackAirlineName(
+            const route = withFallbackAirline(
               identity.route || await routeFromSchedule(scheduled),
-              scheduled.airlineName || adsbdbAirlineName,
+              primaryRouteLookup.route,
             );
             const data = shape(
               found.aircraft,
@@ -1235,9 +1244,9 @@ export async function GET(request: NextRequest) {
       }
       const airlineName = scheduled.airlineName || adsbdbAirlineName;
       const enrichedScheduled = { ...scheduled, airlineName };
-      const route = withFallbackAirlineName(
+      const route = withFallbackAirline(
         await routeFromSchedule(enrichedScheduled),
-        airlineName,
+        primaryRouteLookup.route,
       ) || primaryRouteLookup.route;
       return NextResponse.json({
         scheduled: { ...enrichedScheduled, route },
@@ -1258,9 +1267,9 @@ export async function GET(request: NextRequest) {
   try {
     const targeted = await findTargetedAirborne([flight, ...candidates]);
     if (targeted) {
-      const route = withFallbackAirlineName(
+      const route = withFallbackAirline(
         routeFromTargetedLive(targeted, null),
-        resolved.routeLookup.route?.airlineName || adsbdbAirlineName,
+        resolved.routeLookup.route || primaryRouteLookup.route,
       ) || resolved.routeLookup.route;
       const data = shape(
         aircraftFromTargetedLive(targeted),
@@ -1329,9 +1338,9 @@ export async function GET(request: NextRequest) {
         .includes(liveIdentity.flight);
     const trustedSchedule = scheduleMatchesLiveIdentity ? verifiedSchedule : null;
     const trustedScheduleRoute = scheduleMatchesLiveIdentity ? verifiedRoute : null;
-    const effectiveRoute = withFallbackAirlineName(
+    const effectiveRoute = withFallbackAirline(
       liveIdentity?.route || trustedScheduleRoute || routeLookup.route,
-      resolved.routeLookup.route?.airlineName || adsbdbAirlineName,
+      resolved.routeLookup.route || primaryRouteLookup.route,
     );
     const data = shape(
       found.aircraft,
@@ -1441,9 +1450,9 @@ export async function GET(request: NextRequest) {
           routeMatched.aircraft,
           routeMatched.identity.flight,
           `${routeMatched.provider.label} · útvonal menti, pontos élő járatazonosítással ellenőrizve`,
-          withFallbackAirlineName(
+          withFallbackAirline(
             routeMatched.route,
-            resolved.routeLookup.route?.airlineName || adsbdbAirlineName,
+            resolved.routeLookup.route || primaryRouteLookup.route,
           ),
           verifiedSchedule,
         );
@@ -1473,9 +1482,9 @@ export async function GET(request: NextRequest) {
     const schedule = await fetchScheduledFlight(scheduleFlight, candidates);
     const airlineName = schedule?.airlineName || adsbdbAirlineName;
     const enrichedSchedule = schedule ? { ...schedule, airlineName } : null;
-    const scheduledRoute = withFallbackAirlineName(
+    const scheduledRoute = withFallbackAirline(
       await routeFromSchedule(enrichedSchedule),
-      airlineName,
+      primaryRouteLookup.route,
     ) || primaryRouteLookup.route;
     const liveData = enrichedSchedule
       ? shapeScheduledLive(

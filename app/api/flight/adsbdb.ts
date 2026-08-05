@@ -2,7 +2,14 @@ export type AdsbdbFlightRouteRecord = {
   callsign?: string | null;
   callsign_icao?: string | null;
   callsign_iata?: string | null;
-  airline?: { name?: string } | null;
+  airline?: {
+    name?: string | null;
+    iata?: string | null;
+    icao?: string | null;
+    callsign?: string | null;
+    country?: string | null;
+    country_iso?: string | null;
+  } | null;
   origin?: Record<string, unknown>;
   destination?: Record<string, unknown>;
 };
