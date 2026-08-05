@@ -1050,6 +1050,121 @@ function metric(label: string, value: string, unit = "", accent = false) {
   );
 }
 
+function gaugePoint(angle: number, radius: number) {
+  const radians = (angle - 90) * Math.PI / 180;
+  return { x: 60 + radius * Math.cos(radians), y: 60 + radius * Math.sin(radians) };
+}
+
+function gaugeArc(startAngle: number, endAngle: number, radius: number) {
+  const start = gaugePoint(endAngle, radius);
+  const end = gaugePoint(startAngle, radius);
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${endAngle - startAngle <= 180 ? 0 : 1} 0 ${end.x} ${end.y}`;
+}
+
+function InstrumentDial({ label, value, min, max, display, unit, secondary, accent = "cyan" }: {
+  label: string;
+  value: number | null;
+  min: number;
+  max: number;
+  display: string;
+  unit: string;
+  secondary: string;
+  accent?: "cyan" | "lime" | "amber";
+}) {
+  const ratio = value == null ? 0 : Math.min(1, Math.max(0, (value - min) / (max - min)));
+  const needleAngle = -135 + ratio * 270;
+  const needleEnd = gaugePoint(needleAngle, 34);
+  const progressEnd = -135 + ratio * 270;
+  return (
+    <article className={`instrument-card ${accent}`}>
+      <div className="instrument-heading"><span>{label}</span><i>LIVE</i></div>
+      <div className="instrument-dial">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <path className="dial-track" d={gaugeArc(-135, 135, 48)} />
+          {value != null && <path className="dial-progress" d={gaugeArc(-135, progressEnd, 48)} />}
+          {Array.from({ length: 10 }, (_, index) => {
+            const angle = -135 + index * 30;
+            const outer = gaugePoint(angle, 46);
+            const inner = gaugePoint(angle, index % 3 === 0 ? 39 : 42);
+            return <line key={angle} x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} className="dial-tick" />;
+          })}
+          <line x1="60" y1="60" x2={needleEnd.x} y2={needleEnd.y} className="dial-needle" />
+          <circle cx="60" cy="60" r="4" className="dial-hub" />
+        </svg>
+        <div className="instrument-readout"><strong>{display}</strong><small>{unit}</small></div>
+      </div>
+      <div className="instrument-secondary">{secondary}</div>
+    </article>
+  );
+}
+
+function TelemetryInstruments({ telemetry }: { telemetry: Telemetry }) {
+  const heading = telemetry.trueHeadingDeg ?? telemetry.magneticHeadingDeg ?? telemetry.trackDeg;
+  const headingRotation = heading == null ? 0 : -heading;
+  const roll = telemetry.rollDeg ?? 0;
+  const verticalRate = telemetry.geometricRateMs ?? telemetry.verticalRateMs;
+  const signalRatio = telemetry.rssiDbfs == null ? 0 : Math.min(1, Math.max(0, (telemetry.rssiDbfs + 35) / 35));
+
+  return (
+    <div className="instrument-console">
+      <div className="console-statusbar">
+        <span><i /> ADS-B MŰSZERRENDSZER</span>
+        <b>{telemetry.callsign || telemetry.flight}</b>
+        <small>FRISSÍTVE {fmt(telemetry.seenSeconds, 1)} s</small>
+      </div>
+      <div className="instrument-grid">
+        <InstrumentDial label="MAGASSÁGMÉRŐ" value={telemetry.geometricAltitudeM} min={0} max={13000} display={fmt(telemetry.geometricAltitudeM)} unit="m" secondary={`Beállítva ${fmt(telemetry.selectedAltitudeM)} m`} />
+        <InstrumentDial label="LÉGSEBESSÉG" value={telemetry.trueAirspeedKmh} min={0} max={1100} display={fmt(telemetry.trueAirspeedKmh)} unit="km/h TAS" secondary={`IAS ${fmt(telemetry.indicatedAirspeedKmh)} km/h · M ${fmt(telemetry.mach, 3)}`} accent="lime" />
+
+        <article className="instrument-card heading-instrument">
+          <div className="instrument-heading"><span>IRÁNYTŰ</span><i>TRUE</i></div>
+          <div className="compass-dial">
+            <div className="compass-lubber">▲</div>
+            <div className="compass-rose" style={{ transform: `rotate(${headingRotation}deg)` }}>
+              <b className="north">N</b><b className="east">E</b><b className="south">S</b><b className="west">W</b><i className="compass-axis" />
+            </div>
+            <div className="compass-value">{fmt(heading)}<small>°</small></div>
+          </div>
+          <div className="instrument-secondary">Mágneses {fmt(telemetry.magneticHeadingDeg)}° · NAV {fmt(telemetry.navHeadingDeg)}°</div>
+        </article>
+
+        <article className="instrument-card attitude-instrument amber">
+          <div className="instrument-heading"><span>VARIOMÉTER · DŐLÉS</span><i>ATT</i></div>
+          <div className="attitude-dial">
+            <div className="attitude-world" style={{ transform: `rotate(${-roll}deg)` }}><div className="sky" /><div className="ground" /></div>
+            <div className="attitude-wings"><i /><b>●</b><i /></div>
+            <div className="attitude-readout"><strong>{fmt(verticalRate, 1)}</strong><small>m/s</small></div>
+          </div>
+          <div className="instrument-secondary">Dőlés {fmt(telemetry.rollDeg, 1)}° · geometriai emelkedés</div>
+        </article>
+
+        <article className="instrument-card environment-instrument">
+          <div className="instrument-heading"><span>KÖRNYEZET</span><i>AIR</i></div>
+          <div className="environment-body">
+            <div className="thermometer"><i style={{ height: `${Math.min(100, Math.max(8, ((telemetry.outsideAirTempC ?? -80) + 80) / 130 * 100))}%` }} /></div>
+            <div className="environment-values">
+              <span>KÜLSŐ HŐMÉRSÉKLET<strong>{fmt(telemetry.outsideAirTempC, 1)} <small>°C</small></strong></span>
+              <span>TELJES HŐMÉRSÉKLET<strong>{fmt(telemetry.totalAirTempC, 1)} <small>°C</small></strong></span>
+              <span>QNH<strong>{fmt(telemetry.navQnhHpa, 1)} <small>hPa</small></strong></span>
+            </div>
+          </div>
+          <div className="instrument-secondary">Szél {fmt(telemetry.windSpeedKmh)} km/h · {fmt(telemetry.windDirectionDeg)}°</div>
+        </article>
+
+        <article className="instrument-card signal-instrument lime">
+          <div className="instrument-heading"><span>JELMINŐSÉG</span><i>RX</i></div>
+          <div className="signal-body">
+            <div className="signal-bars" aria-hidden="true">{Array.from({ length: 7 }, (_, index) => <i key={index} className={index / 7 < signalRatio ? "active" : ""} />)}</div>
+            <div className="signal-value"><strong>{fmt(telemetry.rssiDbfs, 1)}</strong><small>dBFS</small></div>
+            <div className="integrity-ring"><span>NIC</span><strong>{fmt(telemetry.signalIntegrity)}</strong><small>± {fmt(telemetry.containmentRadiusM)} m</small></div>
+          </div>
+          <div className="instrument-secondary">{fmt(telemetry.messages)} üzenet · pozíció {fmt(telemetry.positionAgeSeconds, 1)} s</div>
+        </article>
+      </div>
+    </div>
+  );
+}
+
 type AltitudeSample = { at: number; altitudeM: number };
 
 function AltitudeChart({ samples, currentAltitude }: { samples: AltitudeSample[]; currentAltitude: number | null }) {
@@ -1789,7 +1904,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608051008</small>
+          <small className="app-version">202608051036</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
@@ -2041,21 +2156,26 @@ export default function Home() {
         </aside>
       </section>
 
-      {telemetry && !scheduled && <section className="details">
-        <div className="details-title">
+      {telemetry && !scheduled && <details className="details telemetry-disclosure">
+        <summary className="details-title">
           <div>
             <span className="eyebrow">TELJES TELEMETRIA</span>
-            <h2>Minden elérhető számszerű adat</h2>
+            <h2>Professzionális műszerfal és minden számszerű adat</h2>
+            <p>Analóg repülési műszerek és részletes ADS-B leolvasás</p>
           </div>
-
+          <span className="details-toggle"><b className="open-label">MŰSZERFAL BEZÁRÁSA</b><b className="closed-label">MŰSZERFAL MEGNYITÁSA</b><i>⌄</i></span>
+        </summary>
+        <div className="telemetry-body">
+          <TelemetryInstruments telemetry={telemetry} />
+          <div className="digital-readout-title"><span>RÉSZLETES DIGITÁLIS LEOLVASÁS</span><small>Az összes elérhető forrásmező</small></div>
+          <div className="details-grid">
+            {secondaryMetrics.map(([label, value, unit]) => metric(label, value, unit))}
+          </div>
+          <p className="note">
+            A helyzet- és telemetriai adatok közösségi ADS-B vevőállomásokból, az útvonaladatok nyilvános járatadatbázisból származnak. A turbulenciaréteg a NOAA/NWS Aviation Weather Center aktuális SIGMET és G-AIRMET veszélyjelzéseit mutatja; nem jelenti azt, hogy a teljes megjelölt területen biztosan turbulencia tapasztalható. Ha a gép még nem látható élőben, a következő várható indulást az Aviationstack menetrendi adatai alapján mutatjuk. Az alkalmazás navigációs célra nem használható.
+          </p>
         </div>
-        <div className="details-grid">
-          {secondaryMetrics.map(([label, value, unit]) => metric(label, value, unit))}
-        </div>
-        <p className="note">
-          A helyzet- és telemetriai adatok közösségi ADS-B vevőállomásokból, az útvonaladatok nyilvános járatadatbázisból származnak. A turbulenciaréteg a NOAA/NWS Aviation Weather Center aktuális SIGMET és G-AIRMET veszélyjelzéseit mutatja; nem jelenti azt, hogy a teljes megjelölt területen biztosan turbulencia tapasztalható. Ha a gép még nem látható élőben, a következő várható indulást az Aviationstack menetrendi adatai alapján mutatjuk. Az alkalmazás navigációs célra nem használható.
-        </p>
-      </section>}
+      </details>}
     </main>
   );
 }
