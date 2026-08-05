@@ -757,28 +757,39 @@ async function fetchLiveFlightIdentity(
   ];
   let row: unknown[] | null = null;
   let lastError: unknown = null;
-  for (const bounds of boundsCandidates) {
-    try {
-      const params = new URLSearchParams({ bounds, ...baseParams });
-      const response = await fetch(`https://data-cloud.flightradar24.com/zones/fcgi/feed.js?${params}`, {
-        headers: {
-          Accept: "application/json",
-          Referer: "https://www.flightradar24.com/",
-          "User-Agent": "Mozilla/5.0",
-        },
-        cache: "no-store",
-        signal: AbortSignal.timeout(6500),
-      });
-      if (!response.ok) throw new Error(`Élő járatazonosítás: HTTP ${response.status}`);
-      const payload = (await response.json()) as Record<string, unknown>;
-      const rows = Object.values(payload).filter((value): value is unknown[] => Array.isArray(value));
-      row = rows.find((value) => String(value[0] || "").trim().toUpperCase() === hex)
-        || rows.find((value) => String(value[16] || "").trim().toUpperCase() === normalizedCallsign)
-        || null;
-      if (row) break;
-    } catch (error) {
-      lastError = error;
+  for (const [boundsIndex, bounds] of boundsCandidates.entries()) {
+    const snapshots = boundsIndex === 0 ? 3 : 1;
+    for (let snapshotAttempt = 0; snapshotAttempt < snapshots; snapshotAttempt += 1) {
+      try {
+        const params = new URLSearchParams({
+          bounds,
+          ...baseParams,
+          _: `${Date.now()}-${boundsIndex}-${snapshotAttempt}`,
+        });
+        const response = await fetch(`https://data-cloud.flightradar24.com/zones/fcgi/feed.js?${params}`, {
+          headers: {
+            Accept: "application/json",
+            Referer: "https://www.flightradar24.com/",
+            "User-Agent": "Mozilla/5.0",
+          },
+          cache: "no-store",
+          signal: AbortSignal.timeout(6500),
+        });
+        if (!response.ok) throw new Error(`Élő járatazonosítás: HTTP ${response.status}`);
+        const payload = (await response.json()) as Record<string, unknown>;
+        const rows = Object.values(payload).filter((value): value is unknown[] => Array.isArray(value));
+        row = rows.find((value) => String(value[0] || "").trim().toUpperCase() === hex)
+          || rows.find((value) => String(value[16] || "").trim().toUpperCase() === normalizedCallsign)
+          || null;
+        if (row) break;
+        if (snapshotAttempt < snapshots - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * (snapshotAttempt + 1)));
+        }
+      } catch (error) {
+        lastError = error;
+      }
     }
+    if (row) break;
   }
   if (!row) {
     if (lastError) throw lastError;

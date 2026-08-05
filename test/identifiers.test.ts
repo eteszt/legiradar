@@ -22,6 +22,8 @@ test("French bee BF commercial numbers use the current FBU operator prefix", () 
   assert.deepEqual(staticCallsignCandidates("BF704"), ["FBU704", "FBU0704", "BF704"]);
   assert.ok(!staticCallsignCandidates("BF704").some((candidate) => candidate.startsWith("RSR")));
   assert.equal(commercialFlightFromCallsign("FBU704"), "BF704");
+  assert.equal(commercialFlightFromCallsign("FBU74E"), null);
+  assert.notEqual(commercialFlightFromCallsign("FBU74E"), "BF74E");
   assert.equal(trustedCommercialAlias("704", "BF704"), null);
 });
 

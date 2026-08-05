@@ -34,6 +34,10 @@ export function commercialFlightFromCallsign(callsign: string) {
   const match = normalized.match(/^([A-Z]{3})(\d{1,4}[A-Z]?)$/);
   if (!match) return null;
   const [, icao, suffix] = match;
+  // A French bee napi alfanumerikus operatív hívójelei (például FBU74E)
+  // nem a kereskedelmi járatszám suffixét őrzik, ezért ezekből nem képezhető
+  // mechanikusan BF74E. A tisztán numerikus FBU704 ↔ BF704 pár továbbra is biztos.
+  if (icao === "FBU" && /[A-Z]/.test(suffix)) return null;
   const iata = Object.entries(operatorIcaoOverrides)
     .find(([, currentIcao]) => currentIcao === icao)?.[0];
   return iata ? `${iata}${suffix}` : null;
