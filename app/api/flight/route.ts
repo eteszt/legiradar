@@ -1196,7 +1196,7 @@ export async function GET(request: NextRequest) {
             );
             if (data) {
               return liveResponse(flight, {
-            identityResolution,
+                identityResolution,
                 data,
                 searchedCallsigns: Array.from(new Set([flight, wantedCommercialFlight, effectiveCallsign])),
                 resolvedAirlineIcao: effectiveCallsign.match(/^([A-Z]{3})/)?.[1] || null,
@@ -1258,7 +1258,7 @@ export async function GET(request: NextRequest) {
       );
       if (data) {
         return liveResponse(flight, {
-            identityResolution,
+          identityResolution,
           data,
           searchedCallsigns: Array.from(new Set([
             targeted.callsign,
@@ -1372,11 +1372,15 @@ export async function GET(request: NextRequest) {
         live: null,
         source: `${found.provider.label} · földön álló pontos járat, menetrendi fallback`,
       };
-      return NextResponse.json({ scheduled: { ...fallbackSchedule, route: effectiveRoute }, searchedCallsigns: candidates });
+      return NextResponse.json({
+        scheduled: { ...fallbackSchedule, route: effectiveRoute },
+        searchedCallsigns: candidates,
+        identityResolution,
+      });
     }
     if (data) {
       return liveResponse(flight, {
-            identityResolution,
+        identityResolution,
         data,
         searchedCallsigns: candidates,
         resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -1456,7 +1460,7 @@ export async function GET(request: NextRequest) {
       : null;
     if (liveData) {
       return liveResponse(flight, {
-            identityResolution,
+        identityResolution,
         data: liveData,
         searchedCallsigns: candidates,
         resolvedAirlineIcao: resolved.resolvedAirlineIcao,
@@ -1467,6 +1471,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         scheduled: { ...schedule, route: scheduledRoute },
         searchedCallsigns: candidates,
+        identityResolution,
       });
     }
   } catch {
