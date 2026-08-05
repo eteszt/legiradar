@@ -14,6 +14,12 @@ import {
   staticCallsignCandidates,
   trustedCommercialAlias,
 } from "./identifiers";
+import {
+  operatorPrefixesForCommercialFlight,
+  rankRouteAircraft,
+  routeSamplePoints,
+  routesMatch,
+} from "./route-scan";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -160,6 +166,25 @@ async function fetchProvider(baseUrl: string, selector: "callsign" | "hex" | "re
   const aircraft = payload.ac?.find((item) => number(item.lat) != null && number(item.lon) != null) ?? null;
   if (!aircraft) throw new Error(`${baseUrl}: nincs ilyen repülőgép`);
   return aircraft;
+}
+
+async function fetchProviderPoint(
+  provider: (typeof communityProviders)[number],
+  lat: number,
+  lon: number,
+  radiusNm = 100,
+) {
+  const response = await fetch(
+    `${provider.baseUrl}/v2/point/${lat.toFixed(4)}/${lon.toFixed(4)}/${radiusNm}`,
+    {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(6500),
+    },
+  );
+  if (!response.ok) throw new Error(`${provider.baseUrl}: HTTP ${response.status}`);
+  const payload = (await response.json()) as { ac?: AdsbAircraft[] };
+  return (payload.ac || []).map((aircraft) => ({ aircraft, provider }));
 }
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -739,6 +764,75 @@ async function fetchLiveFlightIdentity(
   return value;
 }
 
+async function findCommercialRouteAircraft(
+  commercialFlight: string,
+  route: FlightRoute,
+  primaryIcao: string | null,
+) {
+  const operatorPrefixes = operatorPrefixesForCommercialFlight(commercialFlight, primaryIcao);
+  if (!operatorPrefixes.length) return null;
+
+  const samples = routeSamplePoints(route.origin, route.destination);
+  const settled = await Promise.allSettled(
+    communityProviders.flatMap((provider) => samples.map((sample) => (
+      fetchProviderPoint(provider, sample.lat, sample.lon)
+    ))),
+  );
+  const observations = settled.flatMap((result) => (
+    result.status === "fulfilled" ? result.value : []
+  ));
+  const byHexOrCallsign = new Map<string, (typeof observations)[number]>();
+  for (const observation of observations) {
+    const hex = String(observation.aircraft.hex || "").trim().toUpperCase();
+    const callsign = String(observation.aircraft.flight || "").trim().toUpperCase();
+    const key = hex || callsign;
+    if (key && !byHexOrCallsign.has(key)) byHexOrCallsign.set(key, observation);
+  }
+  const uniqueObservations = Array.from(byHexOrCallsign.values());
+  const ranked = rankRouteAircraft(
+    uniqueObservations.map((item) => item.aircraft),
+    route.origin,
+    route.destination,
+    operatorPrefixes,
+  );
+  const wantedFlight = commercialFlight.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  // A geometriai közelség csak jelöltképzés. Elfogadni kizárólag azt a gépet
+  // szabad, amelynek útvonala egyezik ÉS a jelenlegi live index ugyanahhoz a
+  // kereskedelmi járatszámhoz köti a hexet/callsignt.
+  for (const candidate of ranked) {
+    const candidateHex = String(candidate.aircraft.hex || "").trim().toUpperCase();
+    const observation = uniqueObservations.find((item) => (
+      candidateHex
+        ? String(item.aircraft.hex || "").trim().toUpperCase() === candidateHex
+        : String(item.aircraft.flight || "").trim().toUpperCase() === candidate.callsign
+    ));
+    if (!observation) continue;
+    const candidateRoute = await fetchRouteLookup([candidate.callsign]);
+    if (!candidateRoute.route || !routesMatch(route, candidateRoute.route)) continue;
+    try {
+      const identity = await fetchLiveFlightIdentity(
+        observation.aircraft,
+        candidate.callsign,
+        candidateRoute.route.airlineName,
+      );
+      if (!identity || identity.flight.toUpperCase().replace(/[^A-Z0-9]/g, "") !== wantedFlight) {
+        continue;
+      }
+      return {
+        aircraft: observation.aircraft,
+        callsign: candidate.callsign,
+        provider: observation.provider,
+        identity,
+        route: identity.route || candidateRoute.route,
+      };
+    } catch {
+      // A pontos live identity hiányában a route-közelség önmagában nem bizonyíték.
+    }
+  }
+  return null;
+}
+
 function shape(
   ac: AdsbAircraft,
   flight: string,
@@ -1077,6 +1171,52 @@ export async function GET(request: NextRequest) {
     }
   } catch {
     // Egyik hívójel sem látható jelenleg az ADS-B hálózatokon.
+  }
+
+  // Az adott napi operatív hívójel eltérhet a kereskedelmi számból képezhető
+  // generikus ICAO-jelölttől (például U21078 → EZS792D). Kereskedelmi inputnál
+  // a pontos útvonal mentén keresünk az operátorcsoport hívójelei között, majd
+  // a találatot ugyanazzal a live-ID identitásforrással ellenőrizzük.
+  if (resolved.commercialInput && resolved.flightNumber && resolved.routeLookup.route) {
+    try {
+      const routeMatched = await findCommercialRouteAircraft(
+        resolved.flightNumber,
+        resolved.routeLookup.route,
+        resolved.resolvedAirlineIcao,
+      );
+      if (routeMatched) {
+        let verifiedSchedule: ScheduledFlightInfo | null = null;
+        try {
+          verifiedSchedule = await fetchScheduledFlight(scheduleFlight, [
+            routeMatched.callsign,
+            ...candidates,
+          ]);
+        } catch {
+          // A pontos élő identitás és pozíció menetrend nélkül is használható.
+        }
+        const data = shape(
+          routeMatched.aircraft,
+          routeMatched.identity.flight,
+          `${routeMatched.provider.label} · útvonal menti, pontos élő járatazonosítással ellenőrizve`,
+          routeMatched.route,
+          verifiedSchedule,
+        );
+        if (data) {
+          return liveResponse(flight, {
+            data,
+            searchedCallsigns: Array.from(new Set([
+              routeMatched.callsign,
+              routeMatched.identity.flight,
+              ...candidates,
+            ])),
+            resolvedAirlineIcao: resolved.resolvedAirlineIcao,
+            matchedByRouteScan: true,
+          });
+        }
+      }
+    } catch {
+      // A menetrendi fallback továbbra is biztonságosan használható.
+    }
   }
 
   // Egyes óceáni vagy ritkább lefedettségű járatokat a közösségi ADS-B hálózat
