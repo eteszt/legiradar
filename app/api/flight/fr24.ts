@@ -62,6 +62,12 @@ export type Fr24ScheduleOccurrence = {
   hex: string | null;
 };
 
+export type Fr24AirframeLiveIdentity = {
+  flight: string;
+  callsign: string;
+  registration: string;
+};
+
 type JsonObject = Record<string, unknown>;
 
 export function normalizeFlightIdentifier(value: unknown) {
@@ -195,6 +201,24 @@ export function isExactLiveCandidate(item: unknown, identifiers: Iterable<string
     || wanted.has(normalizeFlightIdentifier(detail.callsign));
 }
 
+export function mapAirframeLiveIdentityCandidate(
+  item: unknown,
+  registration: string,
+  identifiers: Iterable<string>,
+): Fr24AirframeLiveIdentity | null {
+  const candidate = object(item);
+  if (candidate.type !== "live" || !candidate.id) return null;
+  const detail = object(candidate.detail);
+  const expectedRegistration = normalizeFlightIdentifier(registration);
+  const candidateRegistration = normalizeFlightIdentifier(detail.reg);
+  const flight = normalizeFlightIdentifier(detail.flight);
+  const callsign = normalizeFlightIdentifier(detail.callsign);
+  const wanted = new Set(Array.from(identifiers, normalizeFlightIdentifier).filter(Boolean));
+  if (!expectedRegistration || candidateRegistration !== expectedRegistration) return null;
+  if (!flight || !callsign || (!wanted.has(flight) && !wanted.has(callsign))) return null;
+  return { flight, callsign, registration: String(detail.reg).trim().toUpperCase() };
+}
+
 export function commercialLiveIdentityQueries(input: string) {
   const normalized = normalizeFlightIdentifier(input);
   return /^[A-Z0-9]{2}\d{1,4}[A-Z]?$/.test(normalized) ? [normalized] : [];
@@ -295,6 +319,36 @@ export async function findTargetedAirborne(identifiers: string[]): Promise<Fr24L
       if (snapshotAttempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 250 * (snapshotAttempt + 1)));
       }
+    }
+  }
+  return null;
+}
+
+export async function findLiveIdentityByAirframe(
+  registration: string,
+  identifiers: string[],
+): Promise<Fr24AirframeLiveIdentity | null> {
+  const normalizedRegistration = normalizeFlightIdentifier(registration);
+  const wanted = Array.from(new Set(identifiers.map(normalizeFlightIdentifier).filter(Boolean)));
+  if (!normalizedRegistration || wanted.length === 0) return null;
+  for (let snapshotAttempt = 0; snapshotAttempt < 3; snapshotAttempt += 1) {
+    try {
+      const cacheBuster = `${Date.now()}-${snapshotAttempt}`;
+      const search = await fetchJson(
+        `https://www.flightradar24.com/v1/search/web/find?query=${encodeURIComponent(registration)}&limit=20&_=${cacheBuster}`,
+      );
+      const results = nested(search, "results");
+      if (Array.isArray(results)) {
+        for (const item of results) {
+          const identity = mapAirframeLiveIdentityCandidate(item, registration, wanted);
+          if (identity) return identity;
+        }
+      }
+    } catch {
+      // Az üres vagy blokkolt edge-választ friss pillanatképpel próbáljuk újra.
+    }
+    if (snapshotAttempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 250 * (snapshotAttempt + 1)));
     }
   }
   return null;

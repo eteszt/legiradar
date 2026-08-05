@@ -4,6 +4,7 @@ import airports from "@nwpr/airport-codes";
 import {
   commercialLiveIdentityQueries,
   findCurrentAirframeOccurrence,
+  findLiveIdentityByAirframe,
   findNext24hSchedule,
   findTargetedAirborne,
   type Fr24Airport,
@@ -1119,7 +1120,9 @@ export async function GET(request: NextRequest) {
   // live-flight identity rekord. Ez ugyanabban a pillanatnyi rekordban köti össze
   // az IATA-járatszámot a tényleges operatív callsignnal és a repülőgép hexével.
   // Csak ennek sikertelensége után képezünk statikus ICAO/callsign jelölteket.
-  const commercialIdentityQueries = commercialLiveIdentityQueries(flight);
+  const inferredCommercialFlight = commercialFlightFromCallsign(flight);
+  const commercialIdentityQueries = commercialLiveIdentityQueries(inferredCommercialFlight || flight);
+  const wantedCommercialFlight = commercialIdentityQueries[0] || flight;
   if (!scheduleOnly && commercialIdentityQueries.length) {
     try {
       const targeted = await findTargetedAirborne(commercialIdentityQueries);
@@ -1164,10 +1167,20 @@ export async function GET(request: NextRequest) {
           })),
         );
         const broadcastCallsign = String(found.aircraft.flight || "").trim().toUpperCase();
-        if (broadcastCallsign) {
-          const identity = await fetchLiveFlightIdentity(found.aircraft, broadcastCallsign, null);
-          if (identity?.flight === flight && identity.callsign === broadcastCallsign) {
-            const scheduled = scheduledInfoFromFr24({ ...occurrence, callsign: broadcastCallsign });
+        const airframeIdentity = broadcastCallsign
+          ? null
+          : await findLiveIdentityByAirframe(occurrence.registration, commercialIdentityQueries);
+        const effectiveCallsign = broadcastCallsign || airframeIdentity?.callsign || "";
+        if (effectiveCallsign) {
+          const identity = broadcastCallsign
+            ? await fetchLiveFlightIdentity(found.aircraft, broadcastCallsign, null)
+            : airframeIdentity && {
+              flight: airframeIdentity.flight,
+              callsign: airframeIdentity.callsign,
+              route: null,
+            };
+          if (identity?.flight === wantedCommercialFlight && identity.callsign === effectiveCallsign) {
+            const scheduled = scheduledInfoFromFr24({ ...occurrence, callsign: effectiveCallsign });
             const route = identity.route || await routeFromSchedule(scheduled);
             const data = shape(
               found.aircraft,
@@ -1179,8 +1192,8 @@ export async function GET(request: NextRequest) {
             if (data) {
               return liveResponse(flight, {
                 data,
-                searchedCallsigns: [flight, broadcastCallsign],
-                resolvedAirlineIcao: broadcastCallsign.match(/^([A-Z]{3})/)?.[1] || null,
+                searchedCallsigns: Array.from(new Set([flight, wantedCommercialFlight, effectiveCallsign])),
+                resolvedAirlineIcao: effectiveCallsign.match(/^([A-Z]{3})/)?.[1] || null,
                 matchedByCurrentRegistration: true,
               });
             }

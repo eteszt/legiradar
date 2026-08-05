@@ -4,6 +4,7 @@ export const operatorIcaoOverrides: Record<string, string> = {
   FR: "RYR",
   FH: "FHY",
   BF: "FBU",
+  FA: "SFR",
   LH: "DLH",
   BA: "BAW",
   KL: "KLM",

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   commercialLiveIdentityQueries,
   isExactLiveCandidate,
+  mapAirframeLiveIdentityCandidate,
   mapScheduleItem,
   mapScheduleMarkdownRows,
   mapSchedulePageRows,
@@ -40,6 +41,21 @@ test("exact targeted live candidate rejects prefix and schedule rows", () => {
   assert.equal(isExactLiveCandidate({ type: "live", id: "x", detail: { flight: "DL183" } }, wanted), true);
   assert.equal(isExactLiveCandidate({ type: "live", id: "x", detail: { flight: "DL1830" } }, wanted), false);
   assert.equal(isExactLiveCandidate({ type: "schedule", id: "x", detail: { flight: "DL183" } }, wanted), false);
+});
+
+test("exact airframe live identity binds a callsign-less ADS-B record safely", () => {
+  const candidate = {
+    id: "410690de",
+    type: "live",
+    detail: { reg: "ZS-FGC", flight: "FA253", callsign: "SFR253" },
+  };
+  assert.deepEqual(
+    mapAirframeLiveIdentityCandidate(candidate, "ZS-FGC", ["FA253"]),
+    { flight: "FA253", callsign: "SFR253", registration: "ZS-FGC" },
+  );
+  assert.equal(mapAirframeLiveIdentityCandidate(candidate, "ZS-OTHER", ["FA253"]), null);
+  assert.equal(mapAirframeLiveIdentityCandidate(candidate, "ZS-FGC", ["FA999"]), null);
+  assert.equal(mapAirframeLiveIdentityCandidate({ ...candidate, type: "schedule" }, "ZS-FGC", ["FA253"]), null);
 });
 
 test("commercial flight numbers enter exact current identity lookup before callsign inference", () => {

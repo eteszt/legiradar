@@ -31,6 +31,12 @@ test("French bee BF commercial numbers use the current FBU operator prefix", () 
   assert.equal(exactCommercialFromFlightAwarePage(livePage, "AAL1028"), null);
 });
 
+test("Safair commercial and operational identifiers resolve bidirectionally", () => {
+  assert.equal(operatorIcaoOverrides.FA, "SFR");
+  assert.deepEqual(staticCallsignCandidates("FA253"), ["SFR253", "SFR0253", "FA253"]);
+  assert.equal(commercialFlightFromCallsign("SFR253"), "FA253");
+});
+
 test("dynamic current operator resolution still takes precedence", () => {
   assert.equal(staticCallsignCandidates("FH8116", "ABC")[0], "ABC8116");
 });
