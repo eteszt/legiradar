@@ -27,7 +27,7 @@ import {
   routesMatch,
   standingCallsignsForRoute,
 } from "./route-scan";
-import { plausibleFlightDurationMinutes, reconciledArrivalTime } from "./journey-timing";
+import { geographicArrivalFromActualDeparture, plausibleFlightDurationMinutes, reconciledArrivalTime } from "./journey-timing";
 import { withFallbackAirline, type AirlineMetadata } from "./airline-name";
 
 export const dynamic = "force-dynamic";
@@ -1000,20 +1000,44 @@ function shape(
       && flownKm >= 5
       && (providerElapsedMinutes == null
         || progressElapsedMinutes > providerElapsedMinutes + 2);
+    // Azonosítsuk, ha a szolgáltatói érkezés csak menetrendi visszaesés,
+    // mert nincs valós ETA (FR24 nem küldött korrigált becslést).
+    const providerArrivalIsScheduledFallback = actualDepartureAt != null
+      && providerArrivalAt != null
+      && schedule?.actualArrivalAt == null
+      && schedule?.estimatedArrivalAt != null
+      && schedule?.scheduledArrivalAt != null
+      && schedule.estimatedArrivalAt === schedule.scheduledArrivalAt;
+    // Ha a gép késve indult, a menetrendi érkezés már érvénytelen.
+    // Ilyenkor a tényleges indulásból és a földrajzi távolságból számolunk.
+    const geographicArrival = actualDepartureAt && providerArrivalIsScheduledFallback
+      ? geographicArrivalFromActualDeparture(
+          actualDepartureAt.getTime(),
+          totalKm,
+          effectiveSpeed,
+        )
+      : null;
+    const usePositionArrival = geographicArrival != null
+      && clearlyAirborne
+      && flownKm >= 5
+      && providerArrivalAt != null
+      && Math.abs(geographicArrival.getTime() - providerArrivalAt.getTime()) > 5 * 60_000;
     const elapsedMinutes = providerTimingConflictsWithPosition
       ? Math.max(geographicElapsedMinutes, progressElapsedMinutes)
       : (providerElapsedMinutes ?? geographicElapsedMinutes);
     const departureAt = providerTimingConflictsWithPosition || !providerDepartureAt
       ? new Date(now - elapsedMinutes * 60_000)
       : providerDepartureAt;
-    const arrivalAt = reconciledArrivalTime(
-      now,
-      departureAt.getTime(),
-      providerArrivalAt?.getTime() ?? null,
-      providerTimingConflictsWithPosition,
-      plausibleDurationMinutes,
-      geographicRemainingMinutes,
-    );
+    const arrivalAt = usePositionArrival
+      ? geographicArrival
+      : reconciledArrivalTime(
+          now,
+          departureAt.getTime(),
+          providerArrivalAt?.getTime() ?? null,
+          providerTimingConflictsWithPosition,
+          plausibleDurationMinutes,
+          geographicRemainingMinutes,
+        );
     const remainingMinutes = arrivalAt
       ? Math.max(0, Math.round((arrivalAt.getTime() - now) / 60_000))
       : geographicRemainingMinutes;
@@ -1028,13 +1052,15 @@ function shape(
       estimatedDepartureAt: departureAt.toISOString(),
       estimatedArrivalAt: arrivalAt?.toISOString()
         || new Date(now + geographicRemainingMinutes * 60_000).toISOString(),
-      timingType: actualDepartureAt
-        ? "Tényleges indulási idő alapján"
-        : providerTimingConflictsWithPosition
-          ? "Becsült, a menetrendi időtartam és az útvonal előrehaladása alapján"
-          : providerDepartureAt
-            ? "Menetrendi vagy szolgáltatói becslés alapján"
-            : "Becsült, az aktuális helyzet és sebesség alapján",
+      timingType: usePositionArrival
+        ? "Tényleges indulási idő és földrajzi pozíció alapján"
+        : actualDepartureAt
+          ? "Tényleges indulási idő alapján"
+          : providerTimingConflictsWithPosition
+            ? "Becsült, a menetrendi időtartam és az útvonal előrehaladása alapján"
+            : providerDepartureAt
+              ? "Menetrendi vagy szolgáltatói becslés alapján"
+              : "Becsült, az aktuális helyzet és sebesség alapján",
     };
   }
   return {

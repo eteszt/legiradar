@@ -30,3 +30,14 @@ export function reconciledArrivalTime(
   }
   return new Date(nowMs + geographicRemainingMinutes * 60_000);
 }
+
+export function geographicArrivalFromActualDeparture(
+  actualDepartureAtMs: number,
+  totalKm: number,
+  effectiveSpeedKmh: number,
+): Date | null {
+  if (!Number.isFinite(actualDepartureAtMs) || totalKm <= 0 || effectiveSpeedKmh <= 0) return null;
+  const totalMinutes = Math.round((totalKm / effectiveSpeedKmh) * 60);
+  if (totalMinutes < 5 || totalMinutes > 24 * 60) return null;
+  return new Date(actualDepartureAtMs + totalMinutes * 60_000);
+}
