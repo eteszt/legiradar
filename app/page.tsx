@@ -95,6 +95,12 @@ type ScheduledFlight = {
   estimatedArrivalAt: string | null;
   actualArrivalAt: string | null;
   delayMinutes: number | null;
+  aircraft: {
+    registration: string | null;
+    typeIata: string | null;
+    typeIcao: string | null;
+    icao24: string | null;
+  } | null;
   source: string;
   route: {
     origin: RouteAirport;
@@ -1849,7 +1855,7 @@ export default function Home() {
   const [scheduled, setScheduled] = useState<ScheduledFlight | null>(null);
   const [trail, setTrail] = useState<[number, number][]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "live" | "scheduled" | "active-no-signal" | "error">("idle");
-  const [message, setMessage] = useState("Adj meg egy járatszámot az élő kereséshez");
+  const [message, setMessage] = useState("Adj meg egy járatszámot, callsign-t vagy lajstromjelet az élő kereséshez");
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [altitudeHistory, setAltitudeHistory] = useState<AltitudeSample[]>([]);
   const [shareLabel, setShareLabel] = useState("Link másolása");
@@ -2169,12 +2175,12 @@ export default function Home() {
           <small className="app-version">202608052253</small>
         </div>
         <form className="search" onSubmit={submit}>
-          <label className="sr-only" htmlFor="flight-search">Járatszám vagy callsign</label>
+          <label className="sr-only" htmlFor="flight-search">Járatszám, callsign vagy lajstromjel</label>
           <input
             id="flight-search"
             value={query}
             onChange={(event) => setQuery(event.target.value.toUpperCase())}
-            placeholder="Járatszám vagy callsign, pl. W62375"
+            placeholder="Járatszám, callsign vagy lajstromjel, pl. W62375"
             autoComplete="off"
           />
           <button type="submit" disabled={status === "loading"}>
@@ -2216,8 +2222,8 @@ export default function Home() {
             <div className="scheduled-map empty-state">
               <div className="scheduled-plane">⌖</div>
               <span>{status === "loading" ? "JÁRAT KERESÉSE" : "LÉGIRADAR"}</span>
-              <strong>{status === "loading" ? "Kapcsolódás…" : "Adj meg egy járatszámot"}</strong>
-              <p>{status === "loading" ? "Az élő ADS-B és menetrendi adatforrások ellenőrzése folyamatban van." : "Például: W62375, TK6534 vagy RYR123"}</p>
+              <strong>{status === "loading" ? "Kapcsolódás…" : "Adj meg egy járatszámot vagy lajstromjelet"}</strong>
+              <p>{status === "loading" ? "Az élő ADS-B és menetrendi adatforrások ellenőrzése folyamatban van." : "Például: W62375, TK6534, RYR123 vagy HA-LXJ"}</p>
             </div>
           )}
           <div className="scanline" aria-hidden="true" />
@@ -2288,6 +2294,12 @@ export default function Home() {
                 <div><span>TERMINÁL</span><strong>{scheduled.origin.terminal || "—"}</strong></div>
                 <div><span>KAPU</span><strong>{scheduled.origin.gate || "—"}</strong></div>
               </div>
+              {scheduled.aircraft && (scheduled.aircraft.typeIata || scheduled.aircraft.registration) && (
+                <div className="schedule-grid aircraft-info-grid">
+                  {scheduled.aircraft.typeIata && <div><span>TÍPUS</span><strong>{scheduled.aircraft.typeIata}</strong></div>}
+                  {scheduled.aircraft.registration && <div><span>LAJSTROMJEL</span><strong>{scheduled.aircraft.registration}</strong></div>}
+                </div>
+              )}
               <FlightTimeline scheduled={scheduled} />
               {weatherFlight?.preflight && (
                 <FlightConditionsPanel

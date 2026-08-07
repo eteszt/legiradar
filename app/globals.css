@@ -252,6 +252,9 @@ button:focus-visible, input:focus-visible {
 
 .schedule-grid div { padding: 18px; background: #091725; }
 .schedule-grid strong { display: block; margin-top: 7px; color: #eefcff; }
+.aircraft-info-grid { margin-top: 1px; }
+.aircraft-info-grid div { padding: 12px 18px; }
+.aircraft-info-grid strong { font-size: 13px; }
 .schedule-note { margin: 20px 18px; color: #7893a2; font-size: 12px; line-height: 1.55; }
 
 .workspace {
@@ -1038,6 +1041,18 @@ button:focus-visible, input:focus-visible {
   .instrument-dial { width: 202px; }
   .digital-readout-title { align-items: flex-start; flex-direction: column; padding: 14px; }
   .details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .schedule-grid { grid-template-columns: 1fr; }
+  .aircraft-info-grid { grid-template-columns: 1fr 1fr; }
+  .aircraft-info-grid div { padding: 10px 14px; }
+  .aircraft-info-grid strong { font-size: 12px; }
+  .flight-summary { padding: 18px 16px 14px; }
+  .flight-summary h1 { font-size: 2rem; }
+  .callsign { font-size: .72rem; }
+  .conditions-stats { gap: 6px; }
+  .conditions-stats > div { padding: 8px 10px; }
+  .hazard-card { padding: 11px 12px 11px 14px; }
+  .hazard-route-grid { grid-template-columns: 1fr; }
+  .hazard-facts { gap: 8px; padding: 9px 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1130,9 +1130,34 @@ function shapeScheduledLive(
 }
 
 export async function GET(request: NextRequest) {
-  const flight = (request.nextUrl.searchParams.get("flight") || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const rawFlight = (request.nextUrl.searchParams.get("flight") || "").toUpperCase();
+  // A lajstromjelek kötőjelet tartalmazhatnak; egyéb karaktereket eltávolítunk.
+  let flight = rawFlight.replace(/[^A-Z0-9\-]/g, "");
+  // Lajstromjel feloldása: ha a bemenet regisztrációnak tűnik, megpróbáljuk
+  // a közösségi ADS-B provider-eken keresztül lekérni a hozzá tartozó callsignt.
+  const REG_PATTERN = /^[A-Z]{1,2}-[A-Z0-9]{1,5}$/;
+  const US_REG_PATTERN = /^[A-Z]\d{1,5}[A-Z]?$/;
+  if (rawFlight.length >= 3
+    && (REG_PATTERN.test(flight) || (US_REG_PATTERN.test(flight) && flight.length >= 4 && flight.length <= 7))
+    && !request.nextUrl.searchParams.has("schedule")
+  ) {
+    try {
+      const regAircraft = await Promise.any(
+        communityProviders.map(async (provider) => ({
+          aircraft: await fetchProvider(provider.baseUrl, "reg", flight),
+          provider,
+        })),
+      );
+      const regCallsign = String(regAircraft.aircraft.flight || "").trim().toUpperCase();
+      if (regCallsign) {
+        flight = regCallsign.replace(/[^A-Z0-9]/g, "");
+      }
+    } catch {
+      // Ha nem sikerül a lajstromjel-feloldás, a normál keresés következik.
+    }
+  }
   if (flight.length < 3 || flight.length > 10) {
-    return NextResponse.json({ error: "Adj meg egy érvényes járatszámot." }, { status: 400 });
+    return NextResponse.json({ error: "Adj meg egy érvényes járatszámot vagy lajstromjelet." }, { status: 400 });
   }
 
   const scheduleOnly = request.nextUrl.searchParams.get("schedule") === "1";
