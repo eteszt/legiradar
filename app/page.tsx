@@ -4,7 +4,7 @@ import { type CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef,
 import { geoGraticule10, geoInterpolate, geoMercator, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import world from "world-atlas/countries-110m.json";
-import { isFlightLevelInHazardLayer, isRelevantFlightLevelTurbulence } from "./weather-relevance";
+import { isFlightLevelInHazardLayer, isPreflightRouteTurbulence, isRelevantFlightLevelTurbulence } from "./weather-relevance";
 
 type AirlineMetadata = {
   name: string | null;
@@ -684,9 +684,11 @@ function FlightConditionsPanel({
   error: string | null;
   updatedAt: string | null;
 }) {
-  const relevant = impacts.filter(isRelevantFlightLevelTurbulence);
-  const severe = relevant.some((impact) => severityLevel(impact) === "severe");
   const preflight = Boolean(telemetry.preflight);
+  const relevant = preflight
+    ? impacts.filter(isPreflightRouteTurbulence)
+    : impacts.filter(isRelevantFlightLevelTurbulence);
+  const severe = relevant.some((impact) => severityLevel(impact) === "severe");
   const weatherIssuedMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
   const plannedDepartureMs = Date.parse(telemetry.updatedAt);
   const outsideForecastHorizon = preflight
@@ -711,7 +713,9 @@ function FlightConditionsPanel({
       : relevant.length > 0
       ? `${relevant.length} várhatóan releváns veszélyszakasz található a ${preflight ? "tervezett" : "hátralévő"} útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában.`
       : impacts.length > 0
-        ? "Az útvonal más, időben vagy magasságban nem releváns jelzett területet érinthet, de nincs részletezendő turbulencia a vizsgált repülési szinten."
+        ? preflight
+          ? "A tervezett útvonal érinthet veszélyzónákat, de ezek az indulás becsült idején nem aktuális turbulenciajelzések."
+          : "Az útvonal más, időben vagy magasságban nem releváns jelzett területet érinthet, de nincs részletezendő turbulencia a vizsgált repülési szinten."
         : preflight
           ? `A jelenlegi SIGMET és G-AIRMET közlemények alapján a tervezett útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs az utazás várható idejére érvényes turbulenciajelzés.`
           : `A hátralévő útvonal ±${ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es folyosójában nincs aktuálisan releváns turbulenciajelzés.`);
@@ -732,7 +736,7 @@ function FlightConditionsPanel({
         <div><span>{preflight ? "ELEMZÉS" : "REPÜLÉSI SZINT"}</span><strong>{preflight ? "INDULÁS ELŐTT" : telemetry.altitudeM == null ? "—" : `FL${Math.round(telemetry.altitudeM / 30.48)}`}</strong></div>
       </div>
       {!loading && relevant.slice(0, 4).map((impact) => {
-        const actuallyRelevant = impact.altitudeRelevant && impact.temporallyRelevant;
+        const actuallyRelevant = preflight ? impact.temporallyRelevant : impact.altitudeRelevant && impact.temporallyRelevant;
         const severity = turbulenceSeverity(impact);
         return (
           <article className={`hazard-card ${actuallyRelevant ? severityLevel(impact) : "inactive"}`} key={impact.id}>
@@ -741,7 +745,7 @@ function FlightConditionsPanel({
                 <span>{severity.label} {impact.feature.properties.hazard.toLocaleLowerCase("hu-HU")}</span>
                 <strong>{impact.feature.properties.source} · {impact.feature.properties.severity} · {impact.feature.properties.base}–{impact.feature.properties.top}</strong>
               </div>
-              <b>{actuallyRelevant ? "RELEVÁNS" : !impact.altitudeRelevant ? "MÁS MAGASSÁG" : "NEM AKTÍV"}</b>
+              <b>{actuallyRelevant ? preflight && !impact.altitudeRelevant ? "ÚTVONALON" : "RELEVÁNS" : !impact.altitudeRelevant ? "MÁS MAGASSÁG" : "NEM AKTÍV"}</b>
             </div>
             <p className="hazard-plain-summary">{hazardPlainLanguage(impact)}</p>
             <div className="hazard-route-grid">
@@ -1480,10 +1484,27 @@ function AltitudeChart({ samples, currentAltitude }: { samples: AltitudeSample[]
   );
 }
 
-function PlannedRouteMap({ flight, activeWithoutSignal }: { flight: WeatherFlight; activeWithoutSignal: boolean }) {
+function PlannedRouteMap({
+  flight,
+  activeWithoutSignal,
+  turbulence,
+  weatherImpacts,
+  weatherLoading,
+  weatherError,
+  weatherUpdatedAt,
+}: {
+  flight: WeatherFlight;
+  activeWithoutSignal: boolean;
+  turbulence: TurbulenceFeature[];
+  weatherImpacts: RouteWeatherImpact[];
+  weatherLoading: boolean;
+  weatherError: string | null;
+  weatherUpdatedAt: string | null;
+}) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [weatherEnabled, setWeatherEnabled] = useState(true);
   const dimensions = { width: 1100, height: 740 };
   const { origin, destination } = flight.journey;
   const routeCoordinates = greatCircleCoordinates(
@@ -1506,10 +1527,35 @@ function PlannedRouteMap({ flight, activeWithoutSignal }: { flight: WeatherFligh
   const originPoint = projection([origin.lon, origin.lat]);
   const destinationPoint = projection([destination.lon, destination.lat]);
   const routePath = path({ type: "LineString", coordinates: routeCoordinates } as never) ?? "";
+  const routeSamples = remainingRouteSamples(flight);
+  const routeImpactIndexes = new Set(weatherImpacts.map((impact) => impact.index));
+  const activeImpactIndexes = new Set(weatherImpacts.filter(isPreflightRouteTurbulence).map((impact) => impact.index));
+  const preflightTurbulenceImpacts = weatherImpacts.filter(isPreflightRouteTurbulence);
+  const nextWeatherImpact = preflightTurbulenceImpacts[0] || weatherImpacts[0];
+  const corridorCoordinates = routeCorridorPolygon(routeSamples);
+  const corridorPath = corridorCoordinates.length > 3
+    ? path({ type: "Polygon", coordinates: [corridorCoordinates] } as never) ?? ""
+    : "";
+  const impactSegments = weatherImpacts.map((impact) => {
+    const segment = routeSamples
+      .filter((sample) => sample.routePercent >= impact.entryPercent && sample.routePercent <= impact.exitPercent)
+      .map((sample) => sample.point);
+    return {
+      ...impact,
+      path: segment.length > 1 ? path({ type: "LineString", coordinates: segment } as never) ?? "" : "",
+      entry: projection(impact.entryPoint),
+      exit: projection(impact.exitPoint),
+    };
+  });
   const mapTransform = `translate(${pan.x} ${pan.y}) translate(${dimensions.width / 2} ${dimensions.height / 2}) scale(${zoom}) translate(${-dimensions.width / 2} ${-dimensions.height / 2})`;
 
   function changeZoom(factor: number) {
     setZoom((value) => Math.min(10, Math.max(.2, value * factor)));
+  }
+
+  function weatherClass(feature: TurbulenceFeature) {
+    if (feature.properties.hazard === "Hegyi hullám") return "mountain-wave";
+    return feature.properties.severity.toUpperCase().includes("SEV") ? "severe" : "moderate";
   }
 
   return (
@@ -1517,7 +1563,7 @@ function PlannedRouteMap({ flight, activeWithoutSignal }: { flight: WeatherFligh
       <svg
         viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
         role="img"
-        aria-label={`A(z) ${origin.iata || origin.icao} és ${destination.iata || destination.icao} közötti tervezett útvonal`}
+        aria-label={`A(z) ${origin.iata || origin.icao} és ${destination.iata || destination.icao} közötti tervezett útvonal és aktuális turbulenciahelyek`}
         onWheel={(event) => {
           event.preventDefault();
           changeZoom(event.deltaY < 0 ? 1.25 : .8);
@@ -1559,9 +1605,26 @@ function PlannedRouteMap({ flight, activeWithoutSignal }: { flight: WeatherFligh
           <circle cx="550" cy="370" r="430" fill="url(#plannedMapGlow)" />
           <path className="graticule" d={path(geoGraticule10()) ?? ""} />
           <path className="countries" d={path(countries) ?? ""} />
+          {corridorPath && <path className="route-corridor" d={corridorPath}><title>Tervezett útvonal ±{ROUTE_CORRIDOR_HALF_WIDTH_KM} km-es elemzési folyosója</title></path>}
+          {weatherEnabled && turbulence.map((area, index) => (
+            <path
+              className={`turbulence-area ${weatherClass(area)} ${activeImpactIndexes.has(index) ? "route-impact active-impact" : routeImpactIndexes.has(index) ? "route-impact inactive-impact" : ""}`}
+              d={path(weatherFeatureForD3(area) as never) ?? ""}
+              key={`${area.properties.source}-${area.properties.area}-${index}`}
+            >
+              <title>{`${area.properties.hazard} · ${area.properties.severity} · ${area.properties.base}–${area.properties.top}${area.properties.area ? ` · ${area.properties.area}` : ""}`}</title>
+            </path>
+          ))}
           <path className="flight-route planned" d={routePath} filter="url(#plannedRouteGlow)">
             <title>Tervezett nagykörű útvonal</title>
           </path>
+          {weatherEnabled && impactSegments.map((impact) => (
+            <g className={`impact-segment ${isPreflightRouteTurbulence(impact) ? "active" : "inactive"}`} key={impact.id}>
+              {impact.path && <path d={impact.path} />}
+              {impact.entry && <g className="impact-marker entry" transform={`translate(${impact.entry[0]} ${impact.entry[1]})`}><circle r="7" /><text x="-11" y="-11" textAnchor="end">BELÉPÉS</text></g>}
+              {impact.exit && <g className="impact-marker exit" transform={`translate(${impact.exit[0]} ${impact.exit[1]})`}><circle r="7" /><text x="11" y="21">KILÉPÉS</text></g>}
+            </g>
+          ))}
           {originPoint && (
             <g className="airport-point planned-origin">
               <circle cx={originPoint[0]} cy={originPoint[1]} r="7" />
@@ -1580,6 +1643,51 @@ function PlannedRouteMap({ flight, activeWithoutSignal }: { flight: WeatherFligh
         <button onClick={() => changeZoom(1.5)} aria-label="Nagyítás">+</button>
         <button onClick={() => changeZoom(1 / 1.5)} aria-label="Kicsinyítés">−</button>
         <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="Alaphelyzet">◎</button>
+      </div>
+      <div className="weather-control">
+        <button
+          className={weatherEnabled ? "active" : ""}
+          onClick={() => setWeatherEnabled((value) => !value)}
+          aria-pressed={weatherEnabled}
+        >
+          <span>≋</span> TURBULENCIA
+        </button>
+        {weatherEnabled && (
+          <div className="weather-legend">
+            <strong>Aktuális veszélyjelzések a tervezett útvonalon</strong>
+            <span><i className="moderate" /> Mérsékelt turbulencia</span>
+            <span><i className="severe" /> Erős turbulencia</span>
+            <span><i className="mountain-wave" /> Hegyi hullám</span>
+            {weatherLoading && <small>Frissítés…</small>}
+            {weatherError && <small className="weather-error">{weatherError}</small>}
+            {!weatherLoading && !weatherError && (
+              <small>{turbulence.length} aktív terület · {weatherUpdatedAt ? new Date(weatherUpdatedAt).toLocaleTimeString("hu-HU", { timeZone: BUDAPEST_TIME_ZONE, hour: "2-digit", minute: "2-digit" }) : "—"}</small>
+            )}
+          </div>
+        )}
+      </div>
+      <div className={`route-weather-brief ${nextWeatherImpact && isPreflightRouteTurbulence(nextWeatherImpact) ? "warning" : "clear"}`}>
+        <span>ÚTVONAL-IDŐJÁRÁS</span>
+        {weatherLoading ? (
+          <strong>Aktuális veszélyjelzések elemzése…</strong>
+        ) : weatherError ? (
+          <strong>{weatherError}</strong>
+        ) : nextWeatherImpact && isPreflightRouteTurbulence(nextWeatherImpact) ? (
+          <>
+            <strong>{preflightTurbulenceImpacts.length} aktuális turbulenciaszakasz a tervezett folyosóban</strong>
+            <small>{nextWeatherImpact.feature.properties.hazard} · {nextWeatherImpact.feature.properties.severity} · {nextWeatherImpact.feature.properties.base}–{nextWeatherImpact.feature.properties.top}{nextWeatherImpact.entryEtaMinutes != null ? ` · belépés kb. ${nextWeatherImpact.entryEtaMinutes} perc múlva` : ""}</small>
+          </>
+        ) : nextWeatherImpact ? (
+          <>
+            <strong>A folyosó érint veszélyzónát, de nem az indulás várható idején</strong>
+            <small>{temporalStatusLabel(nextWeatherImpact)}</small>
+          </>
+        ) : (
+          <>
+            <strong>Nincs az útvonalat érintő aktuális turbulenciajelzés</strong>
+            <small>NOAA/NWS SIGMET és G-AIRMET alapján</small>
+          </>
+        )}
       </div>
       <div className="planned-route-badge">
         <span>{activeWithoutSignal ? "AKTÍV · POZÍCIÓ NEM ELÉRHETŐ" : "MENETREND SZERINTI JÁRAT"}</span>
@@ -2172,7 +2280,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608071900</small>
+          <small className="app-version">202608151047</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám, callsign vagy lajstromjel</label>
@@ -2200,6 +2308,11 @@ export default function Home() {
               key={`${scheduled.flight}-${scheduled.scheduledDepartureAt || "scheduled"}`}
               flight={weatherFlight}
               activeWithoutSignal={status === "active-no-signal"}
+              turbulence={turbulence}
+              weatherImpacts={weatherImpacts}
+              weatherLoading={weatherLoading}
+              weatherError={weatherError}
+              weatherUpdatedAt={weatherUpdatedAt}
             />
           ) : scheduled ? (
             <div className="scheduled-map">

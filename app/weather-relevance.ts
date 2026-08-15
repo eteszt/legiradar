@@ -23,3 +23,8 @@ export function isRelevantFlightLevelTurbulence(impact: FlightLevelHazardImpact)
     && impact.temporallyRelevant
     && impact.feature.properties.hazard.trim().toLocaleLowerCase("hu-HU") === "turbulencia";
 }
+
+export function isPreflightRouteTurbulence(impact: FlightLevelHazardImpact) {
+  return impact.temporallyRelevant
+    && impact.feature.properties.hazard.trim().toLocaleLowerCase("hu-HU") === "turbulencia";
+}
