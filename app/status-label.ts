@@ -16,3 +16,8 @@ export function statusLabel(status: string) {
   if (normalized.startsWith("delayed")) return "KÉSIK";
   return labels[normalized] || status.toLocaleUpperCase("hu-HU");
 }
+
+export function scheduledPhaseLabel(status: string) {
+  const label = statusLabel(status);
+  return label === "VÁRHATÓ INDULÁS" ? "MENETRENDI ADAT" : label;
+}

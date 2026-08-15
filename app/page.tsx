@@ -4,7 +4,7 @@ import { type CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef,
 import { geoGraticule10, geoInterpolate, geoMercator, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import world from "world-atlas/countries-110m.json";
-import { statusLabel } from "./status-label";
+import { scheduledPhaseLabel } from "./status-label";
 import { isFlightLevelInHazardLayer, isPreflightRouteTurbulence, isRelevantFlightLevelTurbulence } from "./weather-relevance";
 
 type AirlineMetadata = {
@@ -2272,7 +2272,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608151123</small>
+          <small className="app-version">202608151124</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám, callsign vagy lajstromjel</label>
@@ -2383,7 +2383,7 @@ export default function Home() {
                 </div>
                 <div className="route-cities">{scheduled.origin.airport || "—"} → {scheduled.destination.airport || "—"}</div>
                 <div className="callsign">{scheduled.airlineName || "Légitársaság nem ismert"} · {scheduled.callsign}</div>
-                <div className="phase">{statusLabel(scheduled.status)}</div>
+                <div className="phase">{scheduledPhaseLabel(scheduled.status)}</div>
               </div>
               <div className="departure-card">
                 <span>{status === "active-no-signal" ? "INDULÁSI IDŐ" : "VÁRHATÓ INDULÁS"}</span>
