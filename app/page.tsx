@@ -1967,6 +1967,7 @@ export default function Home() {
   const [airportWeatherLoading, setAirportWeatherLoading] = useState(false);
   const [airportWeatherError, setAirportWeatherError] = useState<string | null>(null);
   const activeQuery = useRef<string | null>(null);
+  const scheduledWatchQuery = useRef<string | null>(null);
 
   const loadFlight = useCallback(async (flight: string, silent = false) => {
     const normalized = flight.trim().toUpperCase().replace(/\s+/g, "");
@@ -1978,6 +1979,7 @@ export default function Home() {
       setAirportWeatherError(null);
       setStatus("loading");
       setMessage("Élő ADS-B adatok keresése…");
+      scheduledWatchQuery.current = null;
     }
     try {
       const response = await fetch(`/api/flight?flight=${encodeURIComponent(normalized)}`, {
@@ -2016,6 +2018,7 @@ export default function Home() {
       );
       setLastSync(new Date());
       activeQuery.current = normalized;
+      scheduledWatchQuery.current = null;
     } catch (error) {
       if (!silent) {
         try {
@@ -2034,13 +2037,16 @@ export default function Home() {
               : schedulePayload.scheduled.source,
           );
           setLastSync(new Date());
-          // Az aktív, de jel nélküli járatot tovább keressük, így az élő jel
-          // visszatérésekor a nézet automatikusan térképre vált.
+          // Az aktív, de jel nélküli járatot sűrűbben, a még nem aktív
+          // menetrendi járatot ritkábban keressük tovább. Amint élő ADS-B jel
+          // érkezik, a sikeres loadFlight automatikusan térképes követésre vált.
           activeQuery.current = isActiveWithoutSignal ? normalized : null;
+          scheduledWatchQuery.current = isActiveWithoutSignal ? null : normalized;
         } catch (scheduleError) {
           setStatus("error");
           setMessage(scheduleError instanceof Error ? scheduleError.message : error instanceof Error ? error.message : "Az adatforrás nem elérhető.");
           activeQuery.current = null;
+          scheduledWatchQuery.current = null;
         }
       }
     }
@@ -2217,6 +2223,15 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [loadFlight]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!activeQuery.current && scheduledWatchQuery.current) {
+        void loadFlight(scheduledWatchQuery.current, true);
+      }
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadFlight]);
+
   const secondaryMetrics = useMemo(
     () => telemetry ? [
       ["Szélesség", `${fmt(Math.abs(telemetry.lat), 4)}° ${telemetry.lat >= 0 ? "N" : "S"}`, ""],
@@ -2272,7 +2287,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608151124</small>
+          <small className="app-version">202608151130</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám, callsign vagy lajstromjel</label>
@@ -2418,7 +2433,7 @@ export default function Home() {
               <p className="schedule-note">
                 {status === "active-no-signal"
                   ? "A menetrendi adat szerint a járat már úton van, de jelenleg egyik helyzetforrás sem ad élő koordinátát. A rendszer 15 másodpercenként újrapróbálja, és jel érkezésekor automatikusan térképes követésre vált."
-                  : "A gép jelenleg nem sugároz élő pozíciót. Felszállás után egy új kereséskor a nézet automatikusan átvált a térképes követésre."}
+                  : "A gép jelenleg nem sugároz élő pozíciót. A rendszer 60 másodpercenként háttérben újrapróbálja az élő ADS-B keresést, és jel érkezésekor automatikusan térképes követésre vált."}
               </p>
             </>
           ) : telemetry ? (
