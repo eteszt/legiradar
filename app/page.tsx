@@ -4,6 +4,7 @@ import { type CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef,
 import { geoGraticule10, geoInterpolate, geoMercator, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import world from "world-atlas/countries-110m.json";
+import { statusLabel } from "./status-label";
 import { isFlightLevelInHazardLayer, isPreflightRouteTurbulence, isRelevantFlightLevelTurbulence } from "./weather-relevance";
 
 type AirlineMetadata = {
@@ -299,15 +300,6 @@ function budapestDateTime(iso: string | null | undefined) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    scheduled: "INDULÁSRA VÁR", active: "AKTÍV", cancelled: "TÖRÖLVE",
-    estimated: "VÁRHATÓ", delayed: "KÉSIK", incident: "ESEMÉNY",
-    diverted: "ÁTIRÁNYÍTVA", landed: "LESZÁLLT",
-  };
-  return labels[status.toLowerCase()] || status.toUpperCase();
 }
 
 function airlineBrand(name: string | null | undefined, callsign: string | null | undefined): AirlineBrand {
@@ -2280,7 +2272,7 @@ export default function Home() {
         <div className="brand" aria-label="Légiradar">
           <span className="radar-logo"><i /></span>
           <span>LÉGIRADAR</span>
-          <small className="app-version">202608151047</small>
+          <small className="app-version">202608151123</small>
         </div>
         <form className="search" onSubmit={submit}>
           <label className="sr-only" htmlFor="flight-search">Járatszám, callsign vagy lajstromjel</label>
